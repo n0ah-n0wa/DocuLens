@@ -6,8 +6,8 @@
 **Companion:** `open-questions.md` — items tagged `[OQ-n]` are unresolved spec ambiguities or
 contradictions. They are NOT resolved here; each affected phase must not start until its OQs are decided.
 
-This note is temporary. Once decisions are taken, the durable outcome belongs in `docs/adr/` and
-`docs/architecture/`, and this file should be deleted.
+This note is temporary. Once decisions are taken, the durable outcome belongs in `docs/decisions/` and
+`docs/architecture.md`, and this file should be deleted.
 
 ---
 
@@ -130,7 +130,7 @@ Commits follow §85 prefixes. Each phase produces or updates the ADR(s) listed.
 - `ruff` (format + lint), `mypy --strict`, strict `tsconfig`, ESLint/Prettier for web.
 - `.env.example` (all §70 categories), `.gitignore` excluding `.env*`, `docker/compose.yaml` with
   Postgres, Redis, Chroma, S3-compatible store (`[OQ-13]`).
-- `docs/adr/` template + ADR-001 (backend architecture), README skeleton, CI skeleton that runs the gates
+- `docs/decisions/` template + ADR-001 (backend architecture), README skeleton, CI skeleton that runs the gates
   even on an empty repo so the pipeline is green from commit one.
 - **Gate:** CI green; compose stack starts.
 

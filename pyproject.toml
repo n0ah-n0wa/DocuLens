@@ -112,7 +112,7 @@ docstring-code-format = true
 # ---------------------------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.12"
-files = ["packages/core", "apps/api", "services/document-worker"]
+files = ["packages/core", "apps/api", "services/document-worker", "scripts"]
 plugins = ["pydantic.mypy"]
 strict = true
 warn_unreachable = true

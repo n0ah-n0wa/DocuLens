@@ -19,3 +19,4 @@ docker/compose.yaml
 .env.*
 !.env.example
 *.md
+scripts

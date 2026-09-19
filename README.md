@@ -32,8 +32,8 @@ flowchart TB
 The backend follows a hexagonal layering (SPECIFICATIONS.md §72). All business logic lives in
 `packages/core` (`doculens`), which has no web-framework, cloud-SDK or persistence dependencies in
 its inner layers. `apps/api` and `services/document-worker` are thin interface layers over it.
-See [docs/architecture/README.md](docs/architecture/README.md) and
-[ADR-001](docs/adr/ADR-001-backend-architecture.md).
+See [docs/architecture.md](docs/architecture.md) and
+[ADR-001](docs/decisions/ADR-001-backend-architecture.md).
 
 ## Features (target scope, SPECIFICATIONS.md §2)
 
@@ -143,6 +143,6 @@ and citation metrics, run separately from the ordinary test suite.
 
 ## Engineering decisions
 
-Architecture Decision Records live in [docs/adr/](docs/adr/README.md). Unresolved specification
+Architecture Decision Records live in [docs/decisions/](docs/decisions/README.md). Unresolved specification
 ambiguities are tracked in [docs/planning/open-questions.md](docs/planning/open-questions.md) and
 must be decided explicitly, never silently (SPECIFICATIONS.md §91).

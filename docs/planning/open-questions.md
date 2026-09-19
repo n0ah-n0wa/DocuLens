@@ -55,6 +55,10 @@ multipart `POST /documents` therefore cannot accept the 50 MB default. The alter
 means the file reaches S3 _before_ the server can validate MIME/signature/PDF validity, which inverts the
 §12 order (Validation → S3 persistence). The §7.3 state machine (UPLOADED → VALIDATING) is compatible with
 validate-after-store, so the spec is internally inconsistent on ordering.
+The same limits constrain the **download** path: §24 requires opening the document and navigating to
+the cited page, so the PDF must reach the browser either through the API (subject to the same
+payload cap) or through a short-lived presigned S3 or CloudFront URL. The decision covers both
+directions.
 **Options:**
 A. Presigned PUT to a quarantine prefix; `POST /documents` creates the row (UPLOADED) and returns the URL;
 a completion call or S3 event triggers VALIDATING in the worker; invalid files are deleted from quarantine.
@@ -283,6 +287,47 @@ a large dependency surface that §84 discourages.
 Documented in ADR-008.
 
 ---
+
+## Added during the architecture review (2026-09-19)
+
+### OQ-27 — Consistency between the document row and the processing job (Important)
+
+**Refs:** §12, §46, §48, §49, §66.
+**Problem:** the PostgreSQL commit and the queue enqueue cannot share a transaction; whichever
+happens first can succeed while the other fails, leaving either an orphaned `UPLOADED` row or a job
+for a missing row. The spec demands idempotency and recoverability but not the mechanism.
+**Options and recommendation:** [ADR-011](../decisions/ADR-011-job-enqueue-consistency.md)
+(commit-then-enqueue with a reconciliation sweep, transactional outbox, or tolerant worker).
+
+### OQ-28 — Database connection management for Lambda (Important)
+
+**Refs:** §5.4, §45, §65, §66.
+**Problem:** each concurrent Lambda instance holds its own database connections; under load the
+total can exceed the RDS connection limit. §5.4 names no connection-management component.
+**Options and recommendation:** [ADR-012](../decisions/ADR-012-lambda-database-connections.md)
+(RDS Proxy, reserved concurrency with tiny pools, or Aurora Data API).
+
+### OQ-29 — Where the insufficient-evidence outcome is decided (Important)
+
+**Refs:** §21, §63, §67.
+**Problem:** §21 requires an explicit "not enough information" response instead of fabrication, but
+does not say whether that is decided before the LLM call (retrieval-score threshold, saving cost and
+removing the model from the decision), by the LLM under prompt instruction, or by both. The choice
+changes cost, latency and how the evaluation suite (§63) scores the "answer does not exist" cases.
+**Proposed default:** both — a configurable score threshold short-circuits clearly empty retrievals,
+and the prompt instructs the model for the remaining cases; the evaluation suite measures each path.
+
+### OQ-30 — Citation attribution mechanism (Important)
+
+**Refs:** §7.8, §23, §62 (citation correctness).
+**Problem:** citations must reference the chunks actually used for the answer, yet the spec does not
+say how the system knows which context chunks the model relied on. Options: the model must emit
+explicit references to numbered context items (structured output, verifiable, provider-dependent);
+every chunk that survived reranking is cited (simple, over-cites); or a post-hoc attribution step
+matches answer sentences to chunks (extra cost, approximate).
+**Proposed default:** numbered context items with mandatory explicit references, validated
+server-side (unknown references are dropped and counted as a citation error in evaluation), with
+the fallback of citing all surviving chunks when the provider cannot follow the format.
 
 ## Decision log
 

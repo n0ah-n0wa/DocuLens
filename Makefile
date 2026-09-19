@@ -4,7 +4,7 @@
 .DEFAULT_GOAL := help
 COMPOSE := docker compose --project-directory . -f docker/compose.yaml
 
-.PHONY: help bootstrap format format-check lint typecheck test test-e2e build check \
+.PHONY: help bootstrap format format-check lint typecheck test test-e2e build docs-check check \
         docker-build infra-up infra-down infra-logs clean
 
 help: ## Show this help
@@ -38,10 +38,14 @@ test: ## Run Python tests
 test-e2e: ## Run Playwright end-to-end tests (requires `make build` first)
 	pnpm run test:e2e
 
+docs-check: ## Verify formatting and relative links of all Markdown documentation
+	pnpm run format:check
+	uv run python scripts/check_doc_links.py
+
 build: ## Build the web application
 	pnpm run build
 
-check: format-check lint typecheck test build ## Run every local quality gate
+check: format-check lint typecheck test build docs-check ## Run every local quality gate
 
 docker-build: ## Build the API and worker images
 	docker build -f docker/api.Dockerfile -t doculens-api:local .
