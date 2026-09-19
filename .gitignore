@@ -1,0 +1,46 @@
+# Environment files and secrets (SPECIFICATIONS.md §54). Only the examples are versioned.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.pnpm-store/
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# Terraform: see infrastructure/terraform/.gitignore
+
+# Editors and operating systems (shared extension recommendations are versioned)
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

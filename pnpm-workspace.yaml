@@ -1,0 +1,13 @@
+packages:
+  - apps/web
+  - packages/shared-types
+
+# Supply-chain policy: refuse package versions published less than 24 hours ago so that a
+# compromised release can be pulled before it reaches this repository. Stated explicitly rather
+# than relying on pnpm's default so the behaviour is identical on every machine and in CI.
+minimumReleaseAge: 1440
+
+# Dependency lifecycle scripts are blocked by default; list the ones explicitly allowed.
+# unrs-resolver: native module resolver used by eslint-config-next's import plugin.
+allowBuilds:
+  unrs-resolver: true

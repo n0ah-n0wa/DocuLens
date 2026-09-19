@@ -1,0 +1,25 @@
+# Generated or externally owned
+node_modules/
+.next/
+out/
+next-env.d.ts
+pnpm-lock.yaml
+uv.lock
+.venv/
+dist/
+build/
+playwright-report/
+test-results/
+.terraform/
+*.tfstate*
+
+# Python is formatted by ruff
+*.py
+
+# Terraform is formatted by `terraform fmt`
+*.tf
+*.tfvars
+*.hcl
+
+# The specification is the authoritative input document and is never reformatted
+SPECIFICATIONS.md

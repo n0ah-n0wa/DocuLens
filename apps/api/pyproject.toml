@@ -1,0 +1,18 @@
+[project]
+name = "doculens-api"
+version = "0.1.0"
+description = "DocuLens HTTP API: the FastAPI interface layer over doculens-core."
+requires-python = ">=3.12"
+dependencies = [
+  "doculens-core",
+  "fastapi==0.141.1",
+  "pydantic==2.13.5",
+  "uvicorn==0.53.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "doculens_api"

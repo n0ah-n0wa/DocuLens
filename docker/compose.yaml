@@ -1,0 +1,56 @@
+# Local infrastructure for development and integration tests (SPECIFICATIONS.md §87).
+# Ports are bound to the loopback interface only so that development services are never reachable
+# from the local network. Run from the repository root so that `.env` is picked up:
+#   docker compose --project-directory . -f docker/compose.yaml up --detach --wait
+#
+# The local S3-compatible object store is added with the document-storage phase once
+# docs/planning/open-questions.md OQ-13 is decided.
+
+name: doculens
+
+services:
+  postgres:
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-doculens}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-doculens-local-only}
+      POSTGRES_DB: ${POSTGRES_DB:-doculens}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7.4.11-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  chroma:
+    image: chromadb/chroma:1.5.9
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    ports:
+      - "127.0.0.1:${CHROMA_PORT:-8001}:8000"
+    volumes:
+      - chroma-data:/data
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "cat < /dev/null > /dev/tcp/127.0.0.1/8000"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:
+  chroma-data:

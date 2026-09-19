@@ -1,0 +1,158 @@
+# Workspace root for the DocuLens Python packages. This project is virtual (never built or
+# published); it pins the shared tool-chain and aggregates the workspace members so that a single
+# `uv sync` installs everything and a single `uv.lock` pins every version (SPECIFICATIONS.md §5.1).
+
+[project]
+name = "doculens-workspace"
+version = "0.0.0"
+description = "Workspace root for DocuLens Python packages (not distributable)."
+requires-python = ">=3.12"
+dependencies = [
+  "doculens-core",
+  "doculens-api",
+  "doculens-worker",
+]
+
+[dependency-groups]
+dev = [
+  "httpx2==2.13.0",
+  "mypy==2.3.1",
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "pytest-cov==7.1.0",
+  "ruff==0.16.8",
+]
+
+[tool.uv]
+package = false
+required-version = ">=0.12"
+
+[tool.uv.workspace]
+members = ["packages/core", "apps/api", "services/document-worker"]
+
+[tool.uv.sources]
+doculens-core = { workspace = true }
+doculens-api = { workspace = true }
+doculens-worker = { workspace = true }
+
+# ---------------------------------------------------------------------------------------------
+# Ruff: formatter + linter for every Python package in the workspace.
+# ---------------------------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["packages/core/src", "apps/api/src", "services/document-worker/src"]
+extend-exclude = [".venv", "node_modules"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W",   # pycodestyle
+  "F",        # pyflakes
+  "I",        # isort
+  "N",        # pep8-naming
+  "UP",       # pyupgrade
+  "B",        # bugbear
+  "A",        # builtins shadowing
+  "C4",       # comprehensions
+  "DTZ",      # naive datetimes
+  "T10",      # leftover debugger calls
+  "T20",      # print statements
+  "SIM",      # simplify
+  "PTH",      # pathlib over os.path
+  "RUF",      # ruff-specific
+  "S",        # bandit security checks
+  "ANN",      # type annotations
+  "ERA",      # commented-out code (§83)
+  "ARG",      # unused arguments
+  "RET",      # return statements
+  "TID",      # tidy imports
+  "TC",       # type-checking-only imports
+  "PIE",      # misc lints
+  "PT",       # pytest style
+  "PL",       # pylint
+  "TRY",      # exception handling hygiene
+  "EM",       # exception messages
+  "BLE",      # blind except
+  "SLF",      # private member access
+  "FBT",      # boolean traps
+  "PERF",     # performance anti-patterns
+  "FURB",     # modernisation
+  "PGH",      # pygrep hooks (blanket noqa / type: ignore)
+  "ISC",      # implicit string concatenation
+  "FLY",      # f-string joins
+  "ASYNC",    # async pitfalls (blocking calls in coroutines)
+  "G",        # logging format
+  "LOG",      # logging
+]
+ignore = [
+  "ISC001", # conflicts with the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = [
+  "S101",    # assert is the pytest idiom
+  "PLR2004", # literal status codes and counts are the expected values under test
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["doculens", "doculens_api", "doculens_worker"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.pylint]
+max-args = 6
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------------------------
+# mypy: strict for all packages and their tests. Test module basenames must be unique across
+# packages because test directories are not packages (see docs/development.md).
+# ---------------------------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["packages/core", "apps/api", "services/document-worker"]
+plugins = ["pydantic.mypy"]
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool", "possibly-undefined"]
+pretty = true
+show_error_codes = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# ---------------------------------------------------------------------------------------------
+# pytest + coverage: one invocation from the workspace root runs every package's tests.
+# ---------------------------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "9.0"
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib --cov --cov-report=term-missing"
+testpaths = ["packages/core/tests", "apps/api/tests", "services/document-worker/tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+xfail_strict = true
+markers = [
+  "unit: fast, isolated tests with no external services",
+  "integration: tests that need PostgreSQL, Redis, ChromaDB or S3-compatible storage",
+  "api: HTTP-level tests through the FastAPI test client",
+  "adversarial: malicious input and abuse scenarios (SPECIFICATIONS.md §64)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["doculens", "doculens_api", "doculens_worker"]
+omit = ["*/__main__.py"] # exercised through a subprocess test, invisible to in-process coverage
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 90
+exclude_also = [
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+  "@overload",
+  "raise NotImplementedError",
+]

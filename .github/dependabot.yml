@@ -1,0 +1,25 @@
+# Keeps every pinned version current through reviewable pull requests (SPECIFICATIONS.md §55, §84).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "docker"
+    directory: "/docker"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "terraform"
+    directories:
+      - "/infrastructure/terraform/envs/staging"
+      - "/infrastructure/terraform/envs/production"
+    schedule:
+      interval: "weekly"

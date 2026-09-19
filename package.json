@@ -1,0 +1,22 @@
+{
+  "name": "doculens",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DocuLens monorepo root: pnpm workspace for the web app and shared TypeScript packages.",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "pnpm --recursive --if-present run lint",
+    "typecheck": "pnpm --recursive --if-present run typecheck",
+    "build": "pnpm --recursive --if-present run build",
+    "test:e2e": "pnpm --filter @doculens/web run test:e2e"
+  },
+  "devDependencies": {
+    "prettier": "3.9.8"
+  }
+}
