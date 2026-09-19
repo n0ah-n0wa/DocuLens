@@ -3,7 +3,11 @@ name = "doculens-core"
 version = "0.1.0"
 description = "DocuLens core: domain, application and infrastructure layers, independent of any web framework."
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic==2.13.5",
+    "pydantic-settings==2.15.0",
+    "structlog==26.1.0",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.17,<0.13.0"]

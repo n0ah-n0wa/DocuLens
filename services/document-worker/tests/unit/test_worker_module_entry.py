@@ -1,5 +1,7 @@
 """The container image starts the worker with ``python -m doculens_worker``; keep that contract."""
 
+import json
+import os
 import subprocess
 import sys
 
@@ -17,7 +19,10 @@ def test_module_entrypoint_runs_and_exits_zero() -> None:
         text=True,
         timeout=30,
         check=False,
+        env={**os.environ, "APP_ENV": "local", "LOG_FORMAT": "json"},
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert f"doculens-worker {__version__} started" in completed.stderr
+    assert completed.stdout.strip(), completed.stderr
+    entries = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
+    assert any(entry.get("version") == __version__ for entry in entries)

@@ -54,7 +54,7 @@ Principles the specification fixes (§1, §4, §90):
 | Component              | Path                       | Package / import name                 | Role                                             |
 | ---------------------- | -------------------------- | ------------------------------------- | ------------------------------------------------ |
 | Core                   | `packages/core`            | `doculens-core` / `doculens`          | domain, application and infrastructure layers    |
-| API                    | `apps/api`                 | `doculens-api` / `doculens_api`       | FastAPI interface layer (liveness probe only)    |
+| API                    | `apps/api`                 | `doculens-api` / `doculens_api`       | FastAPI interface layer (health probes only)     |
 | Worker                 | `services/document-worker` | `doculens-worker` / `doculens_worker` | queue-driven interface layer (entrypoint only)   |
 | Web                    | `apps/web`                 | `@doculens/web`                       | Next.js application (placeholder page)           |
 | Shared contracts       | `packages/shared-types`    | `@doculens/shared-types`              | TypeScript API contracts (error envelope only)   |
@@ -96,17 +96,22 @@ in more than one place.
 
 ## 4. Frontend / backend boundary
 
-**Implemented:** the convention only. Public routes are versioned under `/api/v1` (§33–§34) and
-platform probes live under `/health`; today only `/health/live` exists. The error envelope
-`{ "error": { "code", "message", "request_id" } }` (§35) exists as a shared TypeScript contract;
-the backend handler that produces it is planned.
+**Implemented:** public routes are versioned under `/api/v1` (§33–§34) and platform probes live
+under `/health` (`/health/live`, `/health/ready`); no versioned route exists yet. Every response
+carries a request ID (honoured from a well-formed incoming header, otherwise generated) that is
+bound to the logging context and returned in the response header (§36). Every failure, whether a
+domain error, request validation, an HTTP error or an unhandled exception, answers with the §35
+envelope `{ "error": { "code", "message", "request_id", "details?" } }` and never exposes internal
+details; the same shape is the shared TypeScript contract. Every response carries baseline
+security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Cache-Control:
+no-store`). The OpenAPI document and interactive docs are served locally and disabled in deployed
+environments unless explicitly enabled. Start-up and shutdown run through the application
+lifespan, which is where connection pools and clients will be opened and closed.
 
 **Planned** (§9, §33–§36, §40–§44, §53):
 
 - The backend never relies on frontend filtering for authorization; every request is authorized
   server-side against the authenticated user.
-- Every request carries a request ID that appears in the response headers, structured logs and
-  error responses.
 - The web app owns: authentication screens and session handling, dashboard, document view, chat
   with citations displayed separately from the answer text, explicit `IDLE / LOADING / SUCCESS /
 ERROR / EMPTY` states, responsive layout and WCAG-oriented accessibility.
@@ -129,7 +134,11 @@ ERROR / EMPTY` states, responsive layout and WCAG-oriented accessibility.
 
 ## 5. Backend layering: domain, application, infrastructure, interfaces
 
-**Implemented:** the package structure, its rules and their enforcement.
+**Implemented:** the package structure, its rules and their enforcement; the domain error
+hierarchy (stable codes mapped to HTTP statuses by the interface layer); the readiness use case
+with its `HealthProbe` port in `application`; validated settings and structured logging in
+`infrastructure`; and the two composition roots, which load settings, configure logging and wire
+components with no module-level state (the API is started through an application factory).
 
 ```mermaid
 flowchart TB
@@ -171,8 +180,8 @@ together with the first adapters.
 **Planned** ports (§15, §18, §48, §73–§74): `LLMProvider`, `EmbeddingProvider`, `RerankerProvider`,
 a vector-store/retriever abstraction, object storage, a job queue, repositories, rate limiting and
 usage tracking. LangChain, when used, stays inside `infrastructure` as an integration layer (§73).
-Configuration is loaded and validated once at start-up by the composition root; invalid production
-configuration fails the process (§70).
+Configuration is loaded and validated once at start-up by the composition root; a deployed
+environment with unsafe values fails the process with a clear message (§70, implemented).
 
 ---
 
@@ -551,11 +560,17 @@ requiring green CI and review. Production deployment never depends on a develope
 
 ## 14. Observability
 
-**Planned** (§36, §50–§52). Nothing is implemented beyond plain logging in the worker entrypoint.
+**Implemented** (§36, §50): both processes emit one JSON object per line with `timestamp`,
+`level`, `logger`, `service`, `environment`, `message` and the fields bound to the current
+context; the API binds `request_id` for the lifetime of each request and writes one access-log
+entry per request with `operation`, `method`, `path`, `status_code` and `duration_ms`. Console
+rendering exists for local development only and is rejected in deployed environments.
+Standard-library and uvicorn records flow through the same pipeline.
 
-- Structured JSON logs with `timestamp, level, service, environment, request_id, user_id,
-document_id, conversation_id, operation, duration_ms, status, error_code`; sensitive values never
-  logged.
+**Planned** (§50–§52):
+
+- Additional bound fields as their features arrive: `user_id`, `document_id`,
+  `conversation_id`, `error_code`; sensitive values never logged (§68).
 - Metrics for the API (requests, errors, latency, status codes), documents (processing duration,
   failures, pages, chunks), RAG (retrieval, reranking and LLM latency, chunk counts, context size)
   and AI (tokens, models, estimated cost, failed requests).
@@ -630,16 +645,16 @@ Trust boundaries fixed by the specification (§22, §53, §68):
 
 ## 16. Status summary
 
-| Area                      | Implemented                               | Planned                                        | Pending decisions                             |
-| ------------------------- | ----------------------------------------- | ---------------------------------------------- | --------------------------------------------- |
-| Layering and packages     | structure, enforcement test, images       | ports, adapters, start-up config validation    | —                                             |
-| Frontend/backend boundary | `/api/v1` convention, error contract type | request IDs, error handler, text rendering     | OQ-3, OQ-3b, OQ-10, OQ-19                     |
-| Ingestion                 | —                                         | §10–§16 pipeline, staleness metadata           | OQ-3, OQ-5, OQ-6, OQ-7, OQ-14                 |
-| RAG                       | —                                         | §17–§27 components, quotas, usage ledger       | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
-| Async processing          | worker deployable                         | queue, guarded transitions, retries, DLQ       | OQ-2, OQ-27 (ADR-011)                         |
-| Persistence               | local services                            | §7 schema + derived records, consistency model | OQ-7, OQ-8, OQ-13, OQ-18, OQ-28 (ADR-012)     |
-| Authentication            | —                                         | §8 with durable refresh tokens                 | OQ-12, OQ-19, OQ-24                           |
-| Authorization             | —                                         | §9, §16, store-level scoping                   | —                                             |
-| AWS                       | Terraform roots                           | §57 modules, VPC egress, OIDC                  | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28  |
-| CI/CD                     | CI pipeline                               | integration job, CD pipeline                   | —                                             |
-| Observability             | —                                         | §50–§52, queue correlation, DLQ alarms         | OQ-21                                         |
+| Area                      | Implemented                                                                                                | Planned                                         | Pending decisions                             |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------- |
+| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots | ports, adapters                                 | —                                             |
+| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                  | text rendering, versioned routes                | OQ-3, OQ-3b, OQ-10, OQ-19                     |
+| Ingestion                 | —                                                                                                          | §10–§16 pipeline, staleness metadata            | OQ-3, OQ-5, OQ-6, OQ-7, OQ-14                 |
+| RAG                       | —                                                                                                          | §17–§27 components, quotas, usage ledger        | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
+| Async processing          | worker deployable                                                                                          | queue, guarded transitions, retries, DLQ        | OQ-2, OQ-27 (ADR-011)                         |
+| Persistence               | local services                                                                                             | §7 schema + derived records, consistency model  | OQ-7, OQ-8, OQ-13, OQ-18, OQ-28 (ADR-012)     |
+| Authentication            | —                                                                                                          | §8 with durable refresh tokens                  | OQ-12, OQ-19, OQ-24                           |
+| Authorization             | —                                                                                                          | §9, §16, store-level scoping                    | —                                             |
+| AWS                       | Terraform roots                                                                                            | §57 modules, VPC egress, OIDC                   | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28  |
+| CI/CD                     | CI pipeline                                                                                                | integration job, CD pipeline                    | —                                             |
+| Observability             | structured JSON logs, request correlation, access log                                                      | metrics, tracing, queue correlation, DLQ alarms | OQ-21                                         |

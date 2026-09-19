@@ -1,0 +1,74 @@
+import pytest
+from pydantic import ValidationError
+
+from doculens.infrastructure.config import (
+    ConfigurationError,
+    CoreSettings,
+    Environment,
+    LogFormat,
+    LogLevel,
+    load_settings,
+)
+
+pytestmark = pytest.mark.unit
+
+
+def test_defaults_are_safe_for_local_development() -> None:
+    settings = CoreSettings(_env_file=None)
+
+    assert settings.app_env is Environment.LOCAL
+    assert settings.log_level is LogLevel.INFO
+    assert settings.log_format is LogFormat.JSON
+    assert settings.is_deployed is False
+
+
+def test_values_are_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "staging")
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("LOG_FORMAT", "json")
+
+    settings = load_settings(CoreSettings, env_file=None)
+
+    assert settings.app_env is Environment.STAGING
+    assert settings.log_level is LogLevel.DEBUG
+    assert settings.is_deployed is True
+
+
+def test_local_environment_may_use_console_logs() -> None:
+    settings = CoreSettings(_env_file=None, app_env=Environment.LOCAL, log_format=LogFormat.CONSOLE)
+
+    assert settings.log_format is LogFormat.CONSOLE
+
+
+@pytest.mark.parametrize("environment", [Environment.STAGING, Environment.PRODUCTION])
+def test_deployed_environments_reject_console_logs(environment: Environment) -> None:
+    with pytest.raises(ValidationError, match="LOG_FORMAT must be json"):
+        CoreSettings(_env_file=None, app_env=environment, log_format=LogFormat.CONSOLE)
+
+
+def test_unknown_environment_value_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "qa")
+
+    with pytest.raises(ConfigurationError, match="invalid configuration: app_env"):
+        load_settings(CoreSettings, env_file=None)
+
+
+def test_unsafe_deployed_configuration_fails_loading(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("LOG_FORMAT", "console")
+
+    with pytest.raises(ConfigurationError, match="unsafe configuration for APP_ENV=production"):
+        load_settings(CoreSettings, env_file=None)
+
+
+def test_settings_are_immutable() -> None:
+    settings = CoreSettings(_env_file=None)
+
+    with pytest.raises(ValidationError):
+        settings.log_level = LogLevel.DEBUG  # type: ignore[misc]  # frozen model is the point
+
+
+def test_unknown_environment_variables_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SOME_UNRELATED_VARIABLE", "value")
+
+    assert load_settings(CoreSettings, env_file=None).app_env is Environment.LOCAL

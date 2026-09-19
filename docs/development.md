@@ -41,7 +41,7 @@ Line endings are forced to LF on every platform by `.gitattributes`; editors pic
 ## 2. Running the services
 
 ```bash
-uv run uvicorn doculens_api.main:app --reload --port 8000     # API + OpenAPI at /docs
+uv run uvicorn doculens_api.main:create_app --factory --reload --port 8000     # API + OpenAPI at /docs
 uv run python -m doculens_worker                              # worker (no job handlers yet)
 pnpm --filter @doculens/web dev                               # web app on :3000
 docker compose --project-directory . -f docker/compose.yaml up --detach --wait

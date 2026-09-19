@@ -97,7 +97,7 @@ make check          # format, lint, type check, tests, build — same gates as C
 Run the API and web app:
 
 ```bash
-uv run uvicorn doculens_api.main:app --reload --port 8000    # http://localhost:8000/docs
+uv run uvicorn doculens_api.main:create_app --factory --reload --port 8000    # http://localhost:8000/docs
 pnpm --filter @doculens/web dev                              # http://localhost:3000
 ```
 

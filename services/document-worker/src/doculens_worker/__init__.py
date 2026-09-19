@@ -5,5 +5,7 @@ processing jobs from the queue port and drives the application-layer pipeline. I
 """
 
 from importlib.metadata import version
+from typing import Final
 
+SERVICE_NAME: Final = "doculens-worker"
 __version__ = version("doculens-worker")
