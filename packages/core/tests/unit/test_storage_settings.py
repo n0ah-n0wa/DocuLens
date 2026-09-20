@@ -1,0 +1,116 @@
+"""Storage configuration: safe local defaults, coherent S3 settings, strict when deployed."""
+
+from pathlib import Path
+
+import pytest
+from pydantic import SecretStr, ValidationError
+
+from doculens.infrastructure.config import (
+    CoreSettings,
+    Environment,
+    StorageBackend,
+    StorageEncryption,
+)
+from doculens.infrastructure.storage import (
+    FilesystemObjectStorage,
+    S3ObjectStorage,
+    build_object_storage,
+)
+
+pytestmark = pytest.mark.unit
+
+DB_URL = SecretStr("postgresql+asyncpg://u:p@127.0.0.1:1/doculens")
+
+
+def _settings(**overrides: object) -> CoreSettings:
+    return CoreSettings(_env_file=None, database_url=DB_URL, **overrides)  # type: ignore[arg-type]
+
+
+def test_the_default_backend_is_the_filesystem_under_a_local_directory() -> None:
+    settings = _settings()
+
+    assert settings.storage_backend is StorageBackend.FILESYSTEM
+    assert settings.storage_local_root == Path(".local/storage")
+    assert settings.storage_encryption is StorageEncryption.NONE
+    assert isinstance(build_object_storage(settings), FilesystemObjectStorage)
+
+
+def test_the_s3_backend_needs_a_bucket_and_builds_without_touching_the_network() -> None:
+    with pytest.raises(ValidationError, match="STORAGE_BUCKET is required"):
+        _settings(storage_backend=StorageBackend.S3)
+
+    settings = _settings(
+        storage_backend=StorageBackend.S3,
+        storage_bucket="doculens-documents",
+        storage_region="eu-central-1",
+        storage_endpoint_url="http://127.0.0.1:1",
+        storage_access_key_id="local",
+        storage_secret_access_key=SecretStr("local-secret"),
+        storage_force_path_style=True,
+    )
+
+    storage = build_object_storage(settings)
+    assert isinstance(storage, S3ObjectStorage)
+    assert storage.bucket == "doculens-documents"
+    assert "local-secret" not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "problem"),
+    [
+        ({"storage_bucket": "Bad_Bucket"}, "storage_bucket"),
+        ({"storage_endpoint_url": "ftp://x"}, "http:// or https://"),
+        ({"storage_access_key_id": "only-the-id"}, "set together"),
+        ({"storage_encryption": StorageEncryption.AWS_KMS}, "STORAGE_KMS_KEY_ID is required"),
+        ({"storage_kms_key_id": "alias/x"}, "needs STORAGE_ENCRYPTION=aws:kms"),
+        ({"storage_endpoint_url": "http://user:pw@minio:9000"}, "must not embed credentials"),
+        ({"storage_expected_bucket_owner": "12345"}, "storage_expected_bucket_owner"),
+        ({"storage_max_object_bytes": 10}, "storage_max_object_bytes"),
+    ],
+)
+def test_incoherent_storage_settings_are_rejected(
+    overrides: dict[str, object], problem: str
+) -> None:
+    with pytest.raises(ValidationError, match=problem):
+        _settings(**overrides)
+
+
+DEPLOYED_S3 = {
+    "storage_backend": StorageBackend.S3,
+    "storage_bucket": "doculens-prod-documents",
+    "storage_region": "eu-central-1",
+    "storage_encryption": StorageEncryption.AES256,
+}
+
+
+@pytest.mark.parametrize("environment", [Environment.STAGING, Environment.PRODUCTION])
+def test_deployed_environments_accept_encrypted_s3_with_role_credentials(
+    environment: Environment,
+) -> None:
+    settings = _settings(app_env=environment, **DEPLOYED_S3)
+
+    assert settings.storage_backend is StorageBackend.S3
+    assert settings.storage_access_key_id is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "problem"),
+    [
+        ({"storage_backend": StorageBackend.FILESYSTEM}, "STORAGE_BACKEND must be s3"),
+        ({"storage_encryption": StorageEncryption.NONE}, "STORAGE_ENCRYPTION must be"),
+        ({"storage_endpoint_url": "http://minio:9000"}, "must use https"),
+        ({"storage_region": None}, "STORAGE_REGION is required"),
+        (
+            {
+                "storage_access_key_id": "AKIAEXAMPLE",
+                "storage_secret_access_key": SecretStr("static"),
+            },
+            "STORAGE_ACCESS_KEY_ID must be unset",
+        ),
+    ],
+)
+def test_deployed_environments_reject_unsafe_storage(
+    overrides: dict[str, object], problem: str
+) -> None:
+    with pytest.raises(ValidationError, match=problem):
+        _settings(app_env=Environment.PRODUCTION, **{**DEPLOYED_S3, **overrides})

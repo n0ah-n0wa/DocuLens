@@ -48,10 +48,10 @@ def test_readiness_checks_the_real_database_by_default(settings: ApiSettings) ->
         response = client.get("/health/ready")
 
     assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
-    (check,) = response.json()["checks"]
-    assert check["name"] == "postgres"
-    assert check["status"] == "fail"
-    assert check["detail"] in {"failed", "timed out"}
+    checks = {check["name"]: check for check in response.json()["checks"]}
+    assert set(checks) == {"postgres", "object-storage"}
+    assert checks["postgres"]["status"] == "fail"
+    assert checks["postgres"]["detail"] in {"failed", "timed out"}
 
 
 def test_readiness_answers_503_while_a_dependency_fails(settings: ApiSettings) -> None:

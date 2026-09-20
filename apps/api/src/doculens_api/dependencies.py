@@ -18,6 +18,7 @@ from doculens.application.conversations import ConversationService
 from doculens.application.documents import DocumentService
 from doculens.application.health import ReadinessService
 from doculens.application.ratelimit import RateLimiter
+from doculens.application.storage import ObjectStorage, OwnerScopedObjectStorage
 from doculens.domain.errors import UnauthenticatedError
 from doculens.domain.users import User
 from doculens.infrastructure.persistence.database import Database
@@ -40,6 +41,7 @@ class AppComponents:
     documents: DocumentService
     conversations: ConversationService
     rate_limiter: RateLimiter
+    object_storage: ObjectStorage
 
 
 def components_of(request: Request) -> AppComponents:
@@ -91,11 +93,25 @@ async def get_current_user(
 
 
 SettingsDep = Annotated[ApiSettings, Depends(get_settings)]
+
+
+async def get_owned_object_storage(
+    request: Request, user: Annotated[User, Depends(get_current_user)]
+) -> OwnerScopedObjectStorage:
+    """Object storage limited to the authenticated user's prefix (§9, §11).
+
+    The raw storage stays inside the composition root: handlers cannot reach a key that does not
+    belong to the caller, whatever identifier a request carries.
+    """
+    return OwnerScopedObjectStorage(components_of(request).object_storage, user.id)
+
+
 ReadinessDep = Annotated[ReadinessService, Depends(get_readiness_service)]
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 CollectionServiceDep = Annotated[CollectionService, Depends(get_collection_service)]
 DocumentServiceDep = Annotated[DocumentService, Depends(get_document_service)]
 ConversationServiceDep = Annotated[ConversationService, Depends(get_conversation_service)]
 RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
+OwnedObjectStorageDep = Annotated[OwnerScopedObjectStorage, Depends(get_owned_object_storage)]
 ClientAddressDep = Annotated[str, Depends(client_address)]
 CurrentUserDep = Annotated[User, Depends(get_current_user)]

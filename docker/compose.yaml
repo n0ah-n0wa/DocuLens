@@ -3,8 +3,9 @@
 # from the local network. Run from the repository root so that `.env` is picked up:
 #   docker compose --project-directory . -f docker/compose.yaml up --detach --wait
 #
-# The local S3-compatible object store is added with the document-storage phase once
-# docs/planning/open-questions.md OQ-13 is decided.
+# MinIO provides the S3-compatible object store (docs/decisions/ADR-014-object-storage.md).
+# `minio-init` (profile `init`, run by `make infra-up`) creates the documents bucket and exits:
+#   docker compose --project-directory . -f docker/compose.yaml run --rm minio-init
 
 name: doculens
 
@@ -51,6 +52,39 @@ services:
       timeout: 3s
       retries: 10
 
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-doculens}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-doculens-local-only}
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio-init:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    profiles: ["init"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-doculens}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-doculens-local-only}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-doculens-documents}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
+        mc mb --ignore-existing "local/$$STORAGE_BUCKET"
+
 volumes:
   postgres-data:
   chroma-data:
+  minio-data:

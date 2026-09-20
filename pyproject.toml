@@ -15,6 +15,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "boto3-stubs[s3]==1.43.98",
   "httpx2==2.13.0",
   "mypy==2.3.1",
   "pytest==9.1.1",
@@ -93,6 +94,9 @@ ignore = [
 "**/tests/**" = [
   "S101",    # assert is the pytest idiom
   "PLR2004", # literal status codes and counts are the expected values under test
+]
+"packages/core/src/doculens/testing/storage_contract.py" = [
+  "S101", # a shared pytest contract suite: assert is the pytest idiom
 ]
 
 [tool.ruff.lint.isort]

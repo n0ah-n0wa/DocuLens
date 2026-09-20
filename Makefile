@@ -60,8 +60,9 @@ docker-build: ## Build the API and worker images
 	docker build -f docker/api.Dockerfile -t doculens-api:local .
 	docker build -f docker/worker.Dockerfile -t doculens-worker:local .
 
-infra-up: ## Start local PostgreSQL, Redis and ChromaDB
+infra-up: ## Start local PostgreSQL, Redis, ChromaDB and MinIO, then create the documents bucket
 	$(COMPOSE) up --detach --wait
+	$(COMPOSE) run --rm minio-init
 
 infra-down: ## Stop the local services (data volumes are kept)
 	$(COMPOSE) down

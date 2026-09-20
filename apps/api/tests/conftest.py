@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -16,7 +17,7 @@ TEST_JWT_SECRET = "api-test-secret-that-is-at-least-32-bytes-long"  # noqa: S105
 
 
 @pytest.fixture
-def settings() -> ApiSettings:
+def settings(tmp_path: Path) -> ApiSettings:
     """Explicit settings so tests never depend on the developer's environment or `.env` file."""
     return ApiSettings(
         _env_file=None,
@@ -27,6 +28,7 @@ def settings() -> ApiSettings:
         health_probe_timeout_seconds=1.0,
         jwt_secret=SecretStr(TEST_JWT_SECRET),
         auth_rate_limit_attempts=1000,
+        storage_local_root=tmp_path / "storage",
     )
 
 

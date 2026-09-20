@@ -16,6 +16,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "src" / "doculens"
 
 EXTERNAL_FORBIDDEN = frozenset(
     {
+        "aioboto3",
         "aiobotocore",
         "alembic",
         "asyncpg",
@@ -28,10 +29,12 @@ EXTERNAL_FORBIDDEN = frozenset(
         "langchain",
         "langchain_community",
         "langchain_core",
+        "minio",
         "psycopg",
         "pydantic_settings",
         "pymupdf",
         "redis",
+        "s3transfer",
         "sqlalchemy",
         "starlette",
     }

@@ -53,6 +53,13 @@ class UnauthenticatedError(DomainError):
     default_message = "Authentication is required."
 
 
+class DependencyUnavailableError(DomainError):
+    """An external dependency (storage, queue, provider) cannot be used right now (§67)."""
+
+    code = "DEPENDENCY_UNAVAILABLE"
+    default_message = "A required service is temporarily unavailable."
+
+
 class RateLimitedError(DomainError):
     """The caller exceeded a request budget; ``retry_after_seconds`` says when to try again."""
 

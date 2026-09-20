@@ -9,12 +9,17 @@ Interface packages extend :class:`CoreSettings` with the fields they own.
 """
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Self
 
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DATABASE_URL_SCHEME = "postgresql+asyncpg"
+BUCKET_NAME_PATTERN = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+AWS_ACCOUNT_ID_PATTERN = r"^[0-9]{12}$"
+DEFAULT_MAX_OBJECT_BYTES = 100 * 1024 * 1024
+ENDPOINT_SCHEMES = ("http://", "https://")
 
 
 class Environment(StrEnum):
@@ -34,6 +39,19 @@ class LogLevel(StrEnum):
     WARNING = "WARNING"
     ERROR = "ERROR"
     CRITICAL = "CRITICAL"
+
+
+class StorageBackend(StrEnum):
+    S3 = "s3"
+    FILESYSTEM = "filesystem"
+
+
+class StorageEncryption(StrEnum):
+    """Server-side encryption requested for every stored object (§53, §57)."""
+
+    NONE = "none"
+    AES256 = "AES256"
+    AWS_KMS = "aws:kms"
 
 
 class ConfigurationError(RuntimeError):
@@ -72,6 +90,46 @@ class CoreSettings(BaseSettings):
     )
     database_echo: bool = Field(default=False, description="Log every SQL statement (local only).")
 
+    storage_backend: StorageBackend = Field(
+        default=StorageBackend.FILESYSTEM,
+        description="Where document originals live (§11): s3 (AWS or S3-compatible) or filesystem.",
+    )
+    storage_local_root: Path = Field(
+        default=Path(".local/storage"),
+        description="Root directory of the filesystem backend (local development and tests).",
+    )
+    storage_bucket: str | None = Field(default=None, pattern=BUCKET_NAME_PATTERN)
+    storage_region: str | None = Field(default=None, pattern=r"^[a-z0-9-]{1,32}$")
+    storage_endpoint_url: str | None = Field(
+        default=None, description="Custom S3 endpoint (MinIO locally); unset for AWS S3."
+    )
+    storage_access_key_id: str | None = Field(
+        default=None, description="Static credentials are for local S3-compatible stores only."
+    )
+    storage_secret_access_key: SecretStr | None = None
+    storage_force_path_style: bool = Field(
+        default=False, description="Path-style addressing, required by MinIO."
+    )
+    storage_encryption: StorageEncryption = Field(
+        default=StorageEncryption.NONE,
+        description="Required to be AES256 or aws:kms when deployed.",
+    )
+    storage_kms_key_id: str | None = Field(default=None, max_length=2048)
+    storage_expected_bucket_owner: str | None = Field(
+        default=None,
+        pattern=AWS_ACCOUNT_ID_PATTERN,
+        description="AWS account that must own the bucket; sent with every request when set.",
+    )
+    storage_max_object_bytes: int = Field(
+        default=DEFAULT_MAX_OBJECT_BYTES,
+        ge=1024,
+        description="Largest object the adapters accept on upload or read back on download.",
+    )
+    storage_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    storage_read_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    storage_max_attempts: int = Field(default=3, ge=1, le=10)
+    storage_max_concurrent_transfers: int = Field(default=8, ge=1, le=64)
+
     @field_validator("database_url")
     @classmethod
     def _require_async_postgres_url(cls, value: SecretStr) -> SecretStr:
@@ -80,6 +138,30 @@ class CoreSettings(BaseSettings):
             message = f"DATABASE_URL must start with {DATABASE_URL_SCHEME}://"
             raise ValueError(message)
         return value
+
+    @model_validator(mode="after")
+    def _validate_storage(self) -> Self:
+        problems: list[str] = []
+        if self.storage_backend is StorageBackend.S3 and self.storage_bucket is None:
+            problems.append("STORAGE_BUCKET is required when STORAGE_BACKEND=s3")
+        if self.storage_endpoint_url is not None:
+            if not self.storage_endpoint_url.startswith(ENDPOINT_SCHEMES):
+                problems.append("STORAGE_ENDPOINT_URL must start with http:// or https://")
+            authority = self.storage_endpoint_url.split("://", 1)[-1].split("/", 1)[0]
+            if "@" in authority:
+                problems.append("STORAGE_ENDPOINT_URL must not embed credentials")
+        if (self.storage_access_key_id is None) != (self.storage_secret_access_key is None):
+            problems.append(
+                "STORAGE_ACCESS_KEY_ID and STORAGE_SECRET_ACCESS_KEY must be set together"
+            )
+        if self.storage_encryption is StorageEncryption.AWS_KMS and not self.storage_kms_key_id:
+            problems.append("STORAGE_KMS_KEY_ID is required when STORAGE_ENCRYPTION=aws:kms")
+        if self.storage_kms_key_id and self.storage_encryption is not StorageEncryption.AWS_KMS:
+            problems.append("STORAGE_KMS_KEY_ID needs STORAGE_ENCRYPTION=aws:kms")
+        if problems:
+            message = "invalid storage configuration: " + "; ".join(problems)
+            raise ValueError(message)
+        return self
 
     @property
     def is_deployed(self) -> bool:
@@ -95,6 +177,22 @@ class CoreSettings(BaseSettings):
             problems.append("LOG_FORMAT must be json (structured logging is required, §50)")
         if self.database_echo:
             problems.append("DATABASE_ECHO must be false (statement logging can expose data, §68)")
+        if self.storage_backend is not StorageBackend.S3:
+            problems.append("STORAGE_BACKEND must be s3 (originals must live in S3, §11)")
+        if self.storage_encryption is StorageEncryption.NONE:
+            problems.append(
+                "STORAGE_ENCRYPTION must be AES256 or aws:kms (encryption at rest, §53)"
+            )
+        if self.storage_region is None:
+            problems.append("STORAGE_REGION is required (request signing must not guess a region)")
+        if self.storage_endpoint_url is not None and not self.storage_endpoint_url.startswith(
+            "https://"
+        ):
+            problems.append("STORAGE_ENDPOINT_URL must use https (encryption in transit, §53)")
+        if self.storage_access_key_id is not None:
+            problems.append(
+                "STORAGE_ACCESS_KEY_ID must be unset (use the execution role, least privilege §57)"
+            )
         if problems:
             message = f"unsafe configuration for APP_ENV={self.app_env}: " + "; ".join(problems)
             raise ValueError(message)

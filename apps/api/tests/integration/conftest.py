@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,7 +33,7 @@ def migrated_database_url() -> Iterator[str]:
 
 
 @pytest.fixture
-def db_client(migrated_database_url: str) -> Iterator[TestClient]:
+def db_client(migrated_database_url: str, tmp_path: Path) -> Iterator[TestClient]:
     settings = ApiSettings(
         _env_file=None,
         app_env=Environment.LOCAL,
@@ -41,6 +42,7 @@ def db_client(migrated_database_url: str) -> Iterator[TestClient]:
         database_url=SecretStr(migrated_database_url),
         jwt_secret=SecretStr(TEST_JWT_SECRET),
         auth_rate_limit_attempts=1000,
+        storage_local_root=tmp_path / "storage",
     )
     with TestClient(create_app(settings)) as client:
         yield client

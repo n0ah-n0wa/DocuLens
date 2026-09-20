@@ -11,7 +11,7 @@ breaking the architecture described in [`architecture.md`](architecture.md).
 | uv        | ≥ 0.12          | Installs the pinned Python (`.python-version`) and all Python packages |
 | Node.js   | 24.20.0         | Pinned in `.node-version`; `corepack enable` provides the pinned pnpm  |
 | pnpm      | 11.22.0         | Pinned in `package.json` (`packageManager`)                            |
-| Docker    | with Compose v2 | Local PostgreSQL, Redis, ChromaDB; image builds                        |
+| Docker    | with Compose v2 | Local PostgreSQL, Redis, ChromaDB, MinIO; image builds                 |
 | GNU make  | any             | Task runner; on Windows use Git Bash or WSL, or run the commands below |
 | Terraform | ~> 1.16         | Only for `infrastructure/terraform`                                    |
 
@@ -19,7 +19,7 @@ breaking the architecture described in [`architecture.md`](architecture.md).
 git clone <repository-url> doculens && cd doculens
 make bootstrap                 # uv sync --frozen; pnpm install --frozen-lockfile; playwright install chromium
 cp .env.example .env           # local-only values; never commit .env
-make infra-up                  # postgres, redis, chroma (docker compose, loopback only)
+make infra-up                  # postgres, redis, chroma, minio (docker compose, loopback only)
 make check                     # everything CI runs, except the Docker and Terraform jobs
 ```
 
@@ -45,6 +45,7 @@ uv run uvicorn doculens_api.main:create_app --factory --reload --port 8000     #
 uv run python -m doculens_worker                              # worker (no job handlers yet)
 pnpm --filter @doculens/web dev                               # web app on :3000
 docker compose --project-directory . -f docker/compose.yaml up --detach --wait
+docker compose --project-directory . -f docker/compose.yaml run --rm minio-init  # documents bucket
 make docker-build                                             # production images, built locally
 ```
 
@@ -65,6 +66,14 @@ make db-downgrade                     # roll back one revision
 CI proves that the migration chain and the models describe the same schema, so an un-migrated
 model change fails the build. If port 5432 is unavailable on your machine, set `POSTGRES_PORT`
 (and the port inside `DATABASE_URL`) in `.env`.
+
+### Document storage
+
+Original PDFs go through the `ObjectStorage` port ([ADR-014](decisions/ADR-014-object-storage.md)).
+The default local backend is the filesystem under `STORAGE_LOCAL_ROOT` (`.local/storage`, git-ignored),
+so nothing beyond a checkout is needed. To exercise the S3 adapter locally, start the compose stack
+and set `STORAGE_BACKEND=s3` with the MinIO values from `.env.example` (`make infra-up` creates the
+bucket). Staging and production accept only `s3` with server-side encryption and role credentials.
 
 Integration tests (`packages/core/tests/integration`, marker `integration`) start a disposable
 PostgreSQL container through testcontainers; set `DOCULENS_TEST_DATABASE_URL` to reuse a running

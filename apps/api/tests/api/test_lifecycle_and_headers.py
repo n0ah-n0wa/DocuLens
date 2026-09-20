@@ -8,7 +8,7 @@ from fastapi import APIRouter, FastAPI, Response
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from doculens.infrastructure.config import Environment, LogLevel
+from doculens.infrastructure.config import Environment, LogLevel, StorageBackend, StorageEncryption
 from doculens_api.main import create_app
 from doculens_api.settings import ApiSettings
 
@@ -49,7 +49,14 @@ def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
         _env_file=None, app_env=Environment.LOCAL, database_url=DB_URL, jwt_secret=JWT
     )
     staging = ApiSettings(
-        _env_file=None, app_env=Environment.STAGING, database_url=DB_URL, jwt_secret=JWT
+        _env_file=None,
+        app_env=Environment.STAGING,
+        database_url=DB_URL,
+        jwt_secret=JWT,
+        storage_backend=StorageBackend.S3,
+        storage_bucket="doculens-test-documents",
+        storage_region="eu-central-1",
+        storage_encryption=StorageEncryption.AES256,
     )
     opted_in = ApiSettings(
         _env_file=None,
@@ -57,6 +64,10 @@ def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
         api_docs_enabled=True,
         database_url=DB_URL,
         jwt_secret=JWT,
+        storage_backend=StorageBackend.S3,
+        storage_bucket="doculens-test-documents",
+        storage_region="eu-central-1",
+        storage_encryption=StorageEncryption.AES256,
     )
 
     assert local.docs_enabled is True

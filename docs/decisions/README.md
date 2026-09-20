@@ -41,6 +41,7 @@ that later readers understand why the system looks the way it does.
 | [ADR-011](ADR-011-job-enqueue-consistency.md)     | Document row / job enqueue consistency         | Proposed | OQ-27 (decision requested)       |
 | [ADR-012](ADR-012-lambda-database-connections.md) | Database connection management for Lambda      | Proposed | OQ-28 (decision requested)       |
 | [ADR-013](ADR-013-authorization-responses.md)     | Resource authorization and not-found responses | Accepted | —                                |
+| [ADR-014](ADR-014-object-storage.md)              | Object storage adapters                        | Accepted | OQ-13 resolved; OQ-3 still open  |
 
 Decisions that only affect ingestion behaviour (OQ-3, OQ-5, OQ-6, OQ-7, OQ-14), the conversation
 model (OQ-8, OQ-18), the RAG mechanisms (OQ-29, OQ-30) or observability (OQ-21) are recorded as

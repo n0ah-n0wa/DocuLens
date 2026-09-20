@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# Local development data (filesystem object storage)
+.local/
+
 # Python
 __pycache__/
 *.py[cod]

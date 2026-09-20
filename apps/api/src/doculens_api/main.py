@@ -29,6 +29,7 @@ from doculens.infrastructure.persistence.database import Database, DatabaseProbe
 from doculens.infrastructure.ratelimit import InMemoryRateLimiter
 from doculens.infrastructure.security.passwords import Argon2PasswordHasher
 from doculens.infrastructure.security.tokens import JwtTokenCodec
+from doculens.infrastructure.storage import ObjectStorageProbe, build_object_storage
 from doculens_api import SERVICE_NAME, __version__
 from doculens_api.dependencies import AppComponents
 from doculens_api.errors import DEFAULT_ERROR_RESPONSES, register_error_handlers
@@ -71,7 +72,12 @@ def create_app(
         log_format=resolved.log_format,
     )
     database = Database(resolved)
-    readiness_probes = probes if probes is not None else [DatabaseProbe(database)]
+    object_storage = build_object_storage(resolved)
+    default_probes: list[HealthProbe] = [
+        DatabaseProbe(database),
+        ObjectStorageProbe(object_storage),
+    ]
+    readiness_probes = probes if probes is not None else default_probes
     unit_of_work = (
         unit_of_work_factory if unit_of_work_factory is not None else database.unit_of_work
     )
@@ -102,6 +108,7 @@ def create_app(
         documents=DocumentService(unit_of_work=unit_of_work),
         conversations=ConversationService(unit_of_work=unit_of_work),
         rate_limiter=rate_limiter if rate_limiter is not None else InMemoryRateLimiter(),
+        object_storage=object_storage,
     )
 
     @asynccontextmanager

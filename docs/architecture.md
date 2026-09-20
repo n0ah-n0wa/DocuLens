@@ -214,9 +214,12 @@ stateDiagram-v2
   extension alone is never trusted (§10.1). Limits are configuration, never hard-coded (§10.2).
   Size and type limits are enforced at the API before any work is queued; page-count limits are
   enforced by the worker during extraction, because the page count is only known after parsing.
-- **Storage**: originals live in S3 under generated identifiers,
-  `documents/{user_id}/{document_id}/original.pdf`; object keys are never derived solely from
-  user-controlled filenames (§11).
+- **Storage** (implemented, [ADR-014](decisions/ADR-014-object-storage.md)): originals live in
+  S3 under generated identifiers, `documents/{user_id}/{document_id}/original.pdf`; object keys
+  are never derived from user-controlled filenames (§11). The `ObjectStorage` port has an S3
+  adapter (AWS or MinIO) and a filesystem adapter for Docker-free development; every object is
+  stored with its SHA-256, which is verified on download, and with server-side encryption when
+  deployed.
 - **Extraction** uses PyMuPDF and preserves page boundaries, page numbers, ordering and metadata;
   pages without extractable text are recorded, never silently dropped (§13). Parsing runs only in
   the worker, under bounded time and memory (§53, excessive resource consumption; §64, malicious PDFs).
@@ -369,8 +372,9 @@ unit-of-work ports in `application` implemented by SQLAlchemy adapters in `infra
 every read of a user-owned resource requires the owner's ID and no ORM relationships exist (no lazy
 loading, no ORM-side cascades); a per-process `Database` (engine,
 sessions, readiness probe) created by the composition roots and disposed at shutdown; and
-integration tests that run against a real PostgreSQL. Local PostgreSQL 17, Redis 7.4 and ChromaDB
-1.5 run via docker compose.
+integration tests that run against a real PostgreSQL. Object storage is behind the `ObjectStorage`
+port with S3 and filesystem adapters ([ADR-014](decisions/ADR-014-object-storage.md)) and its own
+readiness probe. Local PostgreSQL 17, Redis 7.4, ChromaDB 1.5 and MinIO run via docker compose.
 
 **Planned** (§7, §45–§47):
 
@@ -426,7 +430,7 @@ PostgreSQL first. Recovery of interrupted deletions is a re-run of the same saga
 triggered by a scheduled sweep or manually is decided with ADR-006.
 
 **Pending:** `OQ-7` (delete semantics), `OQ-8` (conversation scope and nullability of
-`collection_id`), `OQ-18` (message status for partial answers), `OQ-13` (local S3-compatible store),
+`collection_id`), `OQ-18` (message status for partial answers),
 `OQ-28` (connection management between Lambda and PostgreSQL,
 [ADR-012, proposed](decisions/ADR-012-lambda-database-connections.md)).
 
@@ -651,35 +655,36 @@ Trust boundaries fixed by the specification (§22, §53, §68):
    public access; secrets only via environment and Secrets Manager; `.env` files are git-ignored
    and secret scanning runs in CI.
 
-| Control                                            | Status          |
-| -------------------------------------------------- | --------------- |
-| Secret scanning, dependency audits, image scanning | Implemented     |
-| Non-root, minimal, pinned container images         | Implemented     |
-| Local services bound to loopback only              | Implemented     |
-| Input validation, upload validation                | Planned         |
-| Authentication, authorization, ownership checks    | Implemented     |
-| Prompt-injection separation and adversarial tests  | Planned         |
-| Rate limiting of authentication endpoints          | Implemented     |
-| Rate limiting elsewhere, quotas, AI cost controls  | Planned         |
-| Bounded PDF parsing in an isolated worker          | Planned         |
-| Text-only rendering of AI and document content     | Planned         |
-| Least-privilege IAM, Secrets Manager               | Planned         |
-| CSRF strategy, token storage                       | Pending `OQ-19` |
+| Control                                             | Status          |
+| --------------------------------------------------- | --------------- |
+| Secret scanning, dependency audits, image scanning  | Implemented     |
+| Non-root, minimal, pinned container images          | Implemented     |
+| Local services bound to loopback only               | Implemented     |
+| Generated object keys, hashed and encrypted objects | Implemented     |
+| Input validation, upload validation                 | Planned         |
+| Authentication, authorization, ownership checks     | Implemented     |
+| Prompt-injection separation and adversarial tests   | Planned         |
+| Rate limiting of authentication endpoints           | Implemented     |
+| Rate limiting elsewhere, quotas, AI cost controls   | Planned         |
+| Bounded PDF parsing in an isolated worker           | Planned         |
+| Text-only rendering of AI and document content      | Planned         |
+| Least-privilege IAM, Secrets Manager                | Planned         |
+| CSRF strategy, token storage                        | Pending `OQ-19` |
 
 ---
 
 ## 16. Status summary
 
-| Area                      | Implemented                                                                                                     | Planned                                               | Pending decisions                             |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------- |
-| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots      | ports, adapters                                       | —                                             |
-| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                       | text rendering, versioned routes                      | OQ-3, OQ-3b, OQ-10, OQ-19                     |
-| Ingestion                 | —                                                                                                               | §10–§16 pipeline, staleness metadata                  | OQ-3, OQ-5, OQ-6, OQ-7, OQ-14                 |
-| RAG                       | —                                                                                                               | §17–§27 components, quotas, usage ledger              | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
-| Async processing          | worker deployable                                                                                               | queue, guarded transitions, retries, DLQ              | OQ-2, OQ-27 (ADR-011)                         |
-| Persistence               | §7 schema, Alembic migration, repositories, unit of work, DB probe                                              | usage ledger, refresh-token record, consistency model | OQ-7, OQ-8, OQ-13, OQ-18, OQ-28 (ADR-012)     |
-| Authentication            | §8 registration, login, atomic refresh rotation, logout, Argon2id, JWT claims, auth rate limiting, audit events | Redis limiter store                                   | OQ-12, OQ-19, OQ-24                           |
-| Authorization             | §9 ownership on collections, documents, conversations, messages, citations                                      | vector and object-store scoping                       | —                                             |
-| AWS                       | Terraform roots                                                                                                 | §57 modules, VPC egress, OIDC                         | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28  |
-| CI/CD                     | CI pipeline                                                                                                     | integration job, CD pipeline                          | —                                             |
-| Observability             | structured JSON logs, request correlation, access log                                                           | metrics, tracing, queue correlation, DLQ alarms       | OQ-21                                         |
+| Area                      | Implemented                                                                                                                       | Planned                                         | Pending decisions                             |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------- |
+| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots                        | ports, adapters                                 | —                                             |
+| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                                         | text rendering, versioned routes                | OQ-3, OQ-3b, OQ-10, OQ-19                     |
+| Ingestion                 | —                                                                                                                                 | §10–§16 pipeline, staleness metadata            | OQ-3, OQ-5, OQ-6, OQ-7, OQ-14                 |
+| RAG                       | —                                                                                                                                 | §17–§27 components, quotas, usage ledger        | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
+| Async processing          | worker deployable                                                                                                                 | queue, guarded transitions, retries, DLQ        | OQ-2, OQ-27 (ADR-011)                         |
+| Persistence               | §7 schema, Alembic migration, repositories, unit of work, DB probe, object storage port with S3 and filesystem adapters (ADR-014) | usage ledger, consistency model                 | OQ-7, OQ-8, OQ-18, OQ-28 (ADR-012)            |
+| Authentication            | §8 registration, login, atomic refresh rotation, logout, Argon2id, JWT claims, auth rate limiting, audit events                   | Redis limiter store                             | OQ-12, OQ-19, OQ-24                           |
+| Authorization             | §9 ownership on collections, documents, conversations, messages, citations                                                        | vector and object-store scoping                 | —                                             |
+| AWS                       | Terraform roots                                                                                                                   | §57 modules, VPC egress, OIDC                   | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28  |
+| CI/CD                     | CI pipeline                                                                                                                       | integration job, CD pipeline                    | —                                             |
+| Observability             | structured JSON logs, request correlation, access log                                                                             | metrics, tracing, queue correlation, DLQ alarms | OQ-21                                         |

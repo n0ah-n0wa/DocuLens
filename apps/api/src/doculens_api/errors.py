@@ -22,6 +22,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from doculens.domain.errors import (
     ConflictError,
+    DependencyUnavailableError,
     DomainError,
     InvalidInputError,
     NotFoundError,
@@ -29,6 +30,7 @@ from doculens.domain.errors import (
     RateLimitedError,
     UnauthenticatedError,
 )
+from doculens.domain.storage import ObjectIntegrityError, ObjectTooLargeError
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -39,6 +41,9 @@ DOMAIN_ERROR_STATUS: Mapping[type[DomainError], HTTPStatus] = {
     ConflictError: HTTPStatus.CONFLICT,
     PermissionDeniedError: HTTPStatus.FORBIDDEN,
     RateLimitedError: HTTPStatus.TOO_MANY_REQUESTS,
+    DependencyUnavailableError: HTTPStatus.SERVICE_UNAVAILABLE,
+    ObjectIntegrityError: HTTPStatus.INTERNAL_SERVER_ERROR,
+    ObjectTooLargeError: HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
 }
 BEARER_CHALLENGE = {"WWW-Authenticate": "Bearer"}
 DEFAULT_DOMAIN_ERROR_STATUS = HTTPStatus.BAD_REQUEST
@@ -138,8 +143,13 @@ def error_response(
 def register_error_handlers(app: FastAPI, *, header_name: str) -> None:
     async def handle_domain_error(request: Request, exc: Exception) -> JSONResponse:
         error = exc if isinstance(exc, DomainError) else DomainError()
-        logger.info("domain error", operation="http.error", error_code=error.code)
         api_error = ApiError.from_domain_error(error)
+        log = (
+            logger.warning
+            if api_error.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
+            else logger.info
+        )
+        log("domain error", operation="http.error", error_code=error.code)
         extra_headers: dict[str, str] | None = None
         if api_error.status_code == HTTPStatus.UNAUTHORIZED:
             extra_headers = BEARER_CHALLENGE

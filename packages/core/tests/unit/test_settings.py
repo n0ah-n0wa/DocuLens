@@ -33,6 +33,10 @@ def test_values_are_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("APP_ENV", "staging")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("LOG_FORMAT", "json")
+    monkeypatch.setenv("STORAGE_BACKEND", "s3")
+    monkeypatch.setenv("STORAGE_BUCKET", "doculens-staging-documents")
+    monkeypatch.setenv("STORAGE_ENCRYPTION", "AES256")
+    monkeypatch.setenv("STORAGE_REGION", "eu-central-1")
 
     settings = load_settings(CoreSettings, env_file=None)
 
