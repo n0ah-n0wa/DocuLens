@@ -5,7 +5,7 @@ without deleting it. The full conversation-scope model is still open (`OQ-8`).
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import Self
@@ -73,10 +73,25 @@ class Document:
     processing_error: str | None = None
     chunk_count: int = 0
     indexed_at: datetime | None = None
+    # Facts learnt from the file itself (§13 document metadata, extraction summary); not in the
+    # §7.3 field list, added under OQ-14 (see ADR-015).
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
     @property
     def is_ready(self) -> bool:
         return self.processing_status is ProcessingStatus.READY
+
+    def with_extraction(
+        self, *, page_count: int, metadata: Mapping[str, object], now: datetime
+    ) -> Self:
+        """Record what extraction learnt; the status transition is a separate, explicit step."""
+        return replace(self, page_count=page_count, metadata=dict(metadata), updated_at=now)
+
+    def with_chunking(
+        self, *, chunk_count: int, metadata: Mapping[str, object], now: datetime
+    ) -> Self:
+        """Record the chunk set; the status transition is a separate, explicit step."""
+        return replace(self, chunk_count=chunk_count, metadata=dict(metadata), updated_at=now)
 
     def transition_to(self, status: ProcessingStatus, *, now: datetime) -> Self:
         """Return a copy in ``status`` if the transition is allowed by §7.3, else raise."""

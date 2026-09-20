@@ -84,11 +84,14 @@ async def test_delete_removes_metadata_first_and_prunes_empty_directories(
 ) -> None:
     key = unique_key()
     await storage.put(key, PAYLOAD, content_type=PDF_MIME_TYPE)
-    owner_dir = root / "objects" / Path(*key.split("/")[:2])
+    object_dir = root / "objects" / Path(*key.split("/")[:3])
+    owner_dir = object_dir.parent
 
     await storage.delete(key)
 
-    assert not owner_dir.exists(), "no per-owner or per-document directory lingers"
+    assert not object_dir.exists(), "the per-document directory is removed"
+    # The owner prefix is shared with concurrent writers and is deliberately kept.
+    assert owner_dir.is_dir()
     assert (root / "objects").is_dir()
     assert (root / "metadata").is_dir()
 
@@ -117,7 +120,35 @@ async def test_unexpected_os_failures_surface_as_storage_unavailable(
         await storage.put("documents/a/b/c", PAYLOAD, content_type=PDF_MIME_TYPE)
 
 
-def test_paths_can_never_resolve_outside_the_root(storage: FilesystemObjectStorage) -> None:
-    # Key validation refuses traversal first; the resolver is the second line of defence.
+async def test_a_write_survives_its_parent_being_pruned_concurrently(
+    storage: FilesystemObjectStorage, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulates a concurrent delete removing the directory between mkdir and rename."""
+    key = unique_key()
+    target_dir = root / "objects" / Path(*key.split("/")[:3])
+    original_replace = Path.replace
+    pruned = False
+
+    def flaky_replace(self: Path, target: Path) -> Path:
+        nonlocal pruned
+        if not pruned and target.name == "original.pdf":
+            pruned = True
+            self.unlink()
+            target_dir.rmdir()
+            raise FileNotFoundError(str(target))
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+
+    await storage.put(key, PAYLOAD, content_type=PDF_MIME_TYPE)
+
+    monkeypatch.undo()
+    assert (await storage.get(key)).data == PAYLOAD
+
+
+@pytest.mark.parametrize("relative", ["../../escape", "a/../b", "a//b", "C:/x", "/abs", "a\\b"])
+def test_unsafe_segments_are_refused_lexically(
+    storage: FilesystemObjectStorage, relative: str
+) -> None:
     with pytest.raises(ValueError, match="outside the storage root"):
-        storage._resolve_under(storage.root / "objects", "../../escape")  # noqa: SLF001
+        storage._resolve_under(storage.root / "objects", relative)  # noqa: SLF001

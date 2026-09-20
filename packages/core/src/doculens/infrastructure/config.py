@@ -125,6 +125,33 @@ class CoreSettings(BaseSettings):
         ge=1024,
         description="Largest object the adapters accept on upload or read back on download.",
     )
+    max_file_size_mb: int = Field(
+        default=50, ge=1, le=5120, description="Largest accepted upload (§10.2)."
+    )
+    max_pages_per_document: int = Field(default=500, ge=1, le=100_000)
+    max_documents_per_user: int = Field(default=100, ge=1, le=1_000_000)
+    pdf_extraction_timeout_seconds: float = Field(
+        default=120.0, gt=0, le=3600, description="Wall-clock bound for one parse (§53, §64)."
+    )
+    pdf_extraction_memory_limit_mb: int = Field(
+        default=1024,
+        ge=0,
+        le=65536,
+        description="Address-space cap of the parser process on POSIX hosts; 0 disables it.",
+    )
+    pdf_max_characters_per_page: int = Field(default=1_000_000, ge=1000, le=50_000_000)
+    pdf_max_total_characters: int = Field(
+        default=20_000_000,
+        ge=1000,
+        le=500_000_000,
+        description="Text budget for one document; bounds worker memory whatever the file holds.",
+    )
+    chunk_size: int = Field(
+        default=512, ge=16, le=8192, description="Chunk budget in tokens (§14)."
+    )
+    chunk_overlap: int = Field(default=64, ge=0, le=4096)
+    min_chunk_size: int = Field(default=64, ge=1, le=8192)
+
     storage_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     storage_read_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     storage_max_attempts: int = Field(default=3, ge=1, le=10)
@@ -158,6 +185,14 @@ class CoreSettings(BaseSettings):
             problems.append("STORAGE_KMS_KEY_ID is required when STORAGE_ENCRYPTION=aws:kms")
         if self.storage_kms_key_id and self.storage_encryption is not StorageEncryption.AWS_KMS:
             problems.append("STORAGE_KMS_KEY_ID needs STORAGE_ENCRYPTION=aws:kms")
+        if self.max_file_size_mb * 1024 * 1024 > self.storage_max_object_bytes:
+            problems.append("MAX_FILE_SIZE_MB must not exceed STORAGE_MAX_OBJECT_BYTES")
+        if self.pdf_max_characters_per_page > self.pdf_max_total_characters:
+            problems.append("PDF_MAX_CHARACTERS_PER_PAGE must not exceed PDF_MAX_TOTAL_CHARACTERS")
+        if self.chunk_overlap >= self.chunk_size:
+            problems.append("CHUNK_OVERLAP must be smaller than CHUNK_SIZE")
+        if self.min_chunk_size > self.chunk_size:
+            problems.append("MIN_CHUNK_SIZE must not exceed CHUNK_SIZE")
         if problems:
             message = "invalid storage configuration: " + "; ".join(problems)
             raise ValueError(message)

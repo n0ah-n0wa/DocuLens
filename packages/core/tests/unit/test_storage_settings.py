@@ -114,3 +114,31 @@ def test_deployed_environments_reject_unsafe_storage(
 ) -> None:
     with pytest.raises(ValidationError, match=problem):
         _settings(app_env=Environment.PRODUCTION, **{**DEPLOYED_S3, **overrides})
+
+
+def test_ingestion_limits_default_to_the_spec_examples_and_fit_the_storage_cap() -> None:
+    settings = _settings()
+
+    assert settings.max_file_size_mb == 50
+    assert settings.max_pages_per_document == 500
+    assert settings.max_documents_per_user == 100
+    assert settings.pdf_extraction_timeout_seconds == 120.0
+
+    with pytest.raises(ValidationError, match="MAX_FILE_SIZE_MB must not exceed"):
+        _settings(max_file_size_mb=200, storage_max_object_bytes=100 * 1024 * 1024)
+
+
+def test_chunking_settings_default_and_stay_coherent() -> None:
+    settings = _settings()
+
+    assert (settings.chunk_size, settings.chunk_overlap, settings.min_chunk_size) == (512, 64, 64)
+
+    with pytest.raises(ValidationError, match="CHUNK_OVERLAP must be smaller"):
+        _settings(chunk_size=100, chunk_overlap=100)
+    with pytest.raises(ValidationError, match="MIN_CHUNK_SIZE must not exceed"):
+        _settings(chunk_size=100, min_chunk_size=101)
+
+
+def test_the_per_page_text_cap_cannot_exceed_the_document_budget() -> None:
+    with pytest.raises(ValidationError, match="PDF_MAX_CHARACTERS_PER_PAGE must not exceed"):
+        _settings(pdf_max_characters_per_page=2_000_000, pdf_max_total_characters=1_000_000)

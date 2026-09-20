@@ -80,3 +80,26 @@ def test_entities_are_immutable() -> None:
 
     with pytest.raises(AttributeError):
         document.filename = "other.pdf"  # type: ignore[misc]  # immutability is the point
+
+
+@pytest.mark.parametrize("source", list(ProcessingStatus))
+def test_every_transition_outside_the_table_is_refused(source: ProcessingStatus) -> None:
+    document = _document(source)
+    for target in ProcessingStatus:
+        if target in ALLOWED_TRANSITIONS[source]:
+            assert document.transition_to(target, now=T1).processing_status is target
+        else:
+            with pytest.raises(InvalidStatusTransitionError):
+                document.transition_to(target, now=T1)
+
+
+def test_extraction_facts_are_recorded_without_changing_the_state() -> None:
+    document = _document(ProcessingStatus.EXTRACTING)
+
+    updated = document.with_extraction(page_count=4, metadata={"pdf": {"title": "T"}}, now=T1)
+
+    assert updated.page_count == 4
+    assert updated.metadata == {"pdf": {"title": "T"}}
+    assert updated.processing_status is ProcessingStatus.EXTRACTING
+    assert updated.updated_at == T1
+    assert document.metadata == {}

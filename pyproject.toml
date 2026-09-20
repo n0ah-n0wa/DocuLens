@@ -130,6 +130,11 @@ enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool", "po
 pretty = true
 show_error_codes = true
 
+# PyMuPDF ships py.typed but leaves most callables unannotated; only these two modules touch it.
+[[tool.mypy.overrides]]
+module = ["doculens.infrastructure.pdf.pymupdf_extractor", "doculens.testing.pdfs"]
+disallow_untyped_calls = false
+
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true

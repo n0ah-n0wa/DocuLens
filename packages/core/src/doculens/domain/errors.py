@@ -60,6 +60,13 @@ class DependencyUnavailableError(DomainError):
     default_message = "A required service is temporarily unavailable."
 
 
+class DatabaseUnavailableError(DependencyUnavailableError):
+    """The database cannot be reached or the connection was lost mid-operation."""
+
+    code = "DATABASE_UNAVAILABLE"
+    default_message = "The service is temporarily unavailable."
+
+
 class RateLimitedError(DomainError):
     """The caller exceeded a request budget; ``retry_after_seconds`` says when to try again."""
 

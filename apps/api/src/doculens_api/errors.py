@@ -30,6 +30,7 @@ from doculens.domain.errors import (
     RateLimitedError,
     UnauthenticatedError,
 )
+from doculens.domain.ingestion import FileTooLargeError
 from doculens.domain.storage import ObjectIntegrityError, ObjectTooLargeError
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
@@ -44,6 +45,7 @@ DOMAIN_ERROR_STATUS: Mapping[type[DomainError], HTTPStatus] = {
     DependencyUnavailableError: HTTPStatus.SERVICE_UNAVAILABLE,
     ObjectIntegrityError: HTTPStatus.INTERNAL_SERVER_ERROR,
     ObjectTooLargeError: HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+    FileTooLargeError: HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
 }
 BEARER_CHALLENGE = {"WWW-Authenticate": "Bearer"}
 DEFAULT_DOMAIN_ERROR_STATUS = HTTPStatus.BAD_REQUEST

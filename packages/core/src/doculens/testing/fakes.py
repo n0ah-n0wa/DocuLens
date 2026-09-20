@@ -16,8 +16,9 @@ from uuid import UUID
 from doculens.domain.auth import RefreshToken
 from doculens.domain.collections import Collection
 from doculens.domain.conversations import Citation, Conversation, Message
-from doculens.domain.documents import Document, DocumentChunk, DocumentPage
-from doculens.domain.errors import NotFoundError
+from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
+from doculens.domain.errors import ConflictError, NotFoundError
+from doculens.domain.ingestion import DuplicateDocumentError
 from doculens.domain.users import User
 
 
@@ -44,6 +45,9 @@ class InMemoryUserRepository:
 
     async def get(self, user_id: UUID) -> User | None:
         return self._store.users.get(user_id)
+
+    async def lock(self, user_id: UUID) -> None:
+        del user_id  # the in-memory store has no concurrent writers
 
     async def get_by_email(self, email: str) -> User | None:
         return next((user for user in self._store.users.values() if user.email == email), None)
@@ -120,11 +124,36 @@ class InMemoryDocumentRepository:
         self._store = store
 
     async def add(self, document: Document) -> None:
+        existing = await self.find_by_content_hash(document.owner_id, document.content_hash)
+        if existing is not None:
+            raise DuplicateDocumentError(existing.id)
         self._store.documents[document.id] = document
 
     async def get(self, owner_id: UUID, document_id: UUID) -> Document | None:
         document = self._store.documents.get(document_id)
         return document if document is not None and document.owner_id == owner_id else None
+
+    async def get_for_processing(self, document_id: UUID) -> Document | None:
+        return self._store.documents.get(document_id)
+
+    async def find_by_content_hash(self, owner_id: UUID, content_hash: str) -> Document | None:
+        matches = [
+            d
+            for d in self._store.documents.values()
+            if d.owner_id == owner_id
+            and d.content_hash == content_hash
+            and d.processing_status is not ProcessingStatus.DELETED
+        ]
+        return min(matches, key=lambda d: (d.created_at, d.id.hex), default=None)
+
+    async def compare_and_update(
+        self, document: Document, *, expected_status: ProcessingStatus
+    ) -> bool:
+        current = self._store.documents.get(document.id)
+        if current is None or current.processing_status is not expected_status:
+            return False
+        self._store.documents[document.id] = document
+        return True
 
     async def list_for_owner(self, owner_id: UUID) -> list[Document]:
         owned = [d for d in self._store.documents.values() if d.owner_id == owner_id]
@@ -147,10 +176,24 @@ class InMemoryDocumentContentRepository:
         self._store = store
 
     async def add_pages(self, pages: Sequence[DocumentPage]) -> None:
+        taken = {(p.document_id, p.page_number) for p in self._store.pages.values()}
+        if any((page.document_id, page.page_number) in taken for page in pages):
+            raise ConflictError
         for page in pages:
             self._store.pages[page.id] = page
 
     async def add_chunks(self, chunks: Sequence[DocumentChunk]) -> None:
+        for chunk in chunks:
+            self._store.chunks[chunk.id] = chunk
+
+    async def replace_chunks(self, document_id: UUID, chunks: Sequence[DocumentChunk]) -> None:
+        keep = {chunk.id for chunk in chunks}
+        for chunk_id, chunk in list(self._store.chunks.items()):
+            if chunk.document_id == document_id and chunk_id not in keep:
+                del self._store.chunks[chunk_id]
+                for citation_id, citation in list(self._store.citations.items()):
+                    if citation.chunk_id == chunk_id:
+                        self._store.citations[citation_id] = replace(citation, chunk_id=None)
         for chunk in chunks:
             self._store.chunks[chunk.id] = chunk
 

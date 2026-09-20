@@ -8,7 +8,7 @@ from pydantic import SecretStr
 from doculens.domain.collections import Collection
 from doculens.domain.conversations import Citation, Message, MessageRole
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
-from doculens.domain.errors import NotFoundError
+from doculens.domain.errors import DatabaseUnavailableError, NotFoundError
 from doculens.domain.ids import new_id
 from doculens.domain.time import utc_now
 from doculens.domain.users import User, UserStatus
@@ -373,3 +373,18 @@ async def test_the_database_bumps_updated_at_when_a_caller_forgets(
         assert stored is not None
         assert stored.name == "Renamed"
         assert stored.updated_at > collection.updated_at
+
+
+async def test_an_unreachable_database_surfaces_as_a_retryable_domain_error() -> None:
+    unreachable = Database(
+        CoreSettings(
+            _env_file=None,
+            database_url=SecretStr("postgresql+asyncpg://u:p@127.0.0.1:1/doculens"),
+        )
+    )
+    try:
+        with pytest.raises(DatabaseUnavailableError):
+            async with unreachable.unit_of_work() as uow:
+                await uow.users.get(new_id())
+    finally:
+        await unreachable.dispose()

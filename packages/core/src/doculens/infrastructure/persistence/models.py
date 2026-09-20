@@ -38,6 +38,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -145,6 +146,14 @@ class DocumentModel(Base):
     __table_args__ = (
         Index(None, "owner_id", "created_at"),
         Index(None, "owner_id", "content_hash"),
+        # One live document per (owner, content): duplicate uploads are refused (§49, OQ-6).
+        Index(
+            "uq_documents_owner_id_content_hash_active",
+            "owner_id",
+            "content_hash",
+            unique=True,
+            postgresql_where=sql_text("processing_status <> 'DELETED'"),
+        ),
         Index(None, "collection_id"),
         Index(None, "processing_status", "updated_at"),
         CheckConstraint("file_size >= 0", name="file_size_non_negative"),
@@ -173,6 +182,9 @@ class DocumentModel(Base):
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
     indexed_at: Mapped[datetime | None] = _optional_timestamp()
+    document_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default=sql_text("'{}'::jsonb")
+    )
 
 
 class DocumentPageModel(Base):

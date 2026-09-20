@@ -188,7 +188,19 @@ environment with unsafe values fails the process with a clear message (§70, imp
 
 ## 6. Document ingestion
 
-**Planned** (§10–§16, §31–§32). The specification fixes the states, validations and storage layout:
+**Implemented** (§10, §12, §13, §14, [ADR-015](decisions/ADR-015-ingestion-pipeline.md),
+[ADR-003](decisions/ADR-003-chunking-strategy.md)): the intake use case (extension, MIME,
+signature, size and per-user limit checks, duplicate refusal, store then register `UPLOADED`)
+and the processor that runs `VALIDATING` (hash, signature, PyMuPDF open, encryption, page
+count), `EXTRACTING` (page-level text with empty-page detection and document metadata) and
+`CHUNKING` (page-scoped, paragraph- and sentence-aware chunks with overlap, verbatim offsets
+and stable ids) with compare-and-set state transitions, resumable and idempotent runs, and an
+isolated, time- and memory-bounded parser process. A chunked document rests in `EMBEDDING`.
+The worker's `process <document-id>` command drives it until the queue consumer exists.
+
+**Planned** (§15–§16, §31–§32): the upload endpoint (`OQ-3`), job enqueue (ADR-011),
+embedding, indexing and deletion. The specification fixes the states, validations and storage
+layout:
 
 ```mermaid
 stateDiagram-v2
@@ -675,16 +687,16 @@ Trust boundaries fixed by the specification (§22, §53, §68):
 
 ## 16. Status summary
 
-| Area                      | Implemented                                                                                                                       | Planned                                         | Pending decisions                             |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------- |
-| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots                        | ports, adapters                                 | —                                             |
-| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                                         | text rendering, versioned routes                | OQ-3, OQ-3b, OQ-10, OQ-19                     |
-| Ingestion                 | —                                                                                                                                 | §10–§16 pipeline, staleness metadata            | OQ-3, OQ-5, OQ-6, OQ-7, OQ-14                 |
-| RAG                       | —                                                                                                                                 | §17–§27 components, quotas, usage ledger        | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
-| Async processing          | worker deployable                                                                                                                 | queue, guarded transitions, retries, DLQ        | OQ-2, OQ-27 (ADR-011)                         |
-| Persistence               | §7 schema, Alembic migration, repositories, unit of work, DB probe, object storage port with S3 and filesystem adapters (ADR-014) | usage ledger, consistency model                 | OQ-7, OQ-8, OQ-18, OQ-28 (ADR-012)            |
-| Authentication            | §8 registration, login, atomic refresh rotation, logout, Argon2id, JWT claims, auth rate limiting, audit events                   | Redis limiter store                             | OQ-12, OQ-19, OQ-24                           |
-| Authorization             | §9 ownership on collections, documents, conversations, messages, citations                                                        | vector and object-store scoping                 | —                                             |
-| AWS                       | Terraform roots                                                                                                                   | §57 modules, VPC egress, OIDC                   | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28  |
-| CI/CD                     | CI pipeline                                                                                                                       | integration job, CD pipeline                    | —                                             |
-| Observability             | structured JSON logs, request correlation, access log                                                                             | metrics, tracing, queue correlation, DLQ alarms | OQ-21                                         |
+| Area                      | Implemented                                                                                                                                   | Planned                                                | Pending decisions                             |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------- |
+| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots                                    | ports, adapters                                        | —                                             |
+| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                                                     | text rendering, versioned routes                       | OQ-3, OQ-3b, OQ-10, OQ-19                     |
+| Ingestion                 | intake validation, isolated PyMuPDF extraction, page persistence, semantic chunking with stable ids (ADR-003, ADR-015), CAS state transitions | upload endpoint, embedding, indexing, staleness checks | OQ-3, OQ-5, OQ-7                              |
+| RAG                       | —                                                                                                                                             | §17–§27 components, quotas, usage ledger               | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
+| Async processing          | worker deployable                                                                                                                             | queue, guarded transitions, retries, DLQ               | OQ-2, OQ-27 (ADR-011)                         |
+| Persistence               | §7 schema, Alembic migration, repositories, unit of work, DB probe, object storage port with S3 and filesystem adapters (ADR-014)             | usage ledger, consistency model                        | OQ-7, OQ-8, OQ-18, OQ-28 (ADR-012)            |
+| Authentication            | §8 registration, login, atomic refresh rotation, logout, Argon2id, JWT claims, auth rate limiting, audit events                               | Redis limiter store                                    | OQ-12, OQ-19, OQ-24                           |
+| Authorization             | §9 ownership on collections, documents, conversations, messages, citations                                                                    | vector and object-store scoping                        | —                                             |
+| AWS                       | Terraform roots                                                                                                                               | §57 modules, VPC egress, OIDC                          | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28  |
+| CI/CD                     | CI pipeline                                                                                                                                   | integration job, CD pipeline                           | —                                             |
+| Observability             | structured JSON logs, request correlation, access log                                                                                         | metrics, tracing, queue correlation, DLQ alarms        | OQ-21                                         |

@@ -112,8 +112,10 @@ class FilesystemObjectStorage:
             object_path = self._object_path(key)
             metadata_path.unlink(missing_ok=True)
             object_path.unlink(missing_ok=True)
-            _prune_empty_parents(metadata_path.parent, stop_at=self._metadata)
-            _prune_empty_parents(object_path.parent, stop_at=self._objects)
+            # Only the object's own directory is pruned: a shared parent (the owner prefix) may
+            # be receiving a concurrent write, and removing it would make that write fail.
+            _prune_empty_directory(metadata_path.parent, stop_at=self._metadata)
+            _prune_empty_directory(object_path.parent, stop_at=self._objects)
 
         await self._run(remove)
         logger.info("object deleted", extra={"operation": "storage.delete", "object_key": key})
@@ -153,18 +155,21 @@ class FilesystemObjectStorage:
 
     @staticmethod
     def _resolve_under(base: Path, relative: str) -> Path:
-        """Defence in depth behind key validation: a path can never leave its tree."""
-        candidate = base.joinpath(*relative.split("/"))
-        if not candidate.resolve().is_relative_to(base.resolve()):
+        """Defence in depth behind key validation, without touching the filesystem.
+
+        Every segment must be a plain name: no empty, ``.`` or ``..`` segments, no separators
+        and no drive or root markers, so the joined path is lexically inside ``base`` whatever
+        the state of the directories (which may be created and pruned concurrently).
+        """
+        segments = relative.split("/")
+        if any(_is_unsafe_segment(segment) for segment in segments):
             message = "object key resolves outside the storage root"
             raise ValueError(message)
-        return candidate
+        return base.joinpath(*segments)
 
     def _write(self, key: str, data: bytes, metadata: ObjectMetadata) -> None:
         object_path = self._object_path(key)
         metadata_path = self._metadata_path(key)
-        object_path.parent.mkdir(parents=True, exist_ok=True)
-        metadata_path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(object_path, data)
         document = {
             "content_type": metadata.content_type,
@@ -190,21 +195,41 @@ class FilesystemObjectStorage:
         )
 
 
+_WRITE_ATTEMPTS = 3
+
+
+def _is_unsafe_segment(segment: str) -> bool:
+    return (
+        segment in {"", ".", ".."}
+        or "/" in segment
+        or "\\" in segment
+        or ":" in segment
+        or Path(segment).is_absolute()
+    )
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
-    temporary = path.with_name(f"{path.name}.tmp-{uuid4().hex}")
-    try:
-        temporary.write_bytes(data)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _prune_empty_parents(directory: Path, *, stop_at: Path) -> None:
-    """Remove now-empty directories up to (excluding) ``stop_at``; best effort."""
-    current = directory
-    while current != stop_at and current.is_relative_to(stop_at):
+    """Write via a temporary file and rename, recreating a parent a concurrent delete pruned."""
+    for attempt in range(_WRITE_ATTEMPTS):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.tmp-{uuid4().hex}")
         try:
-            current.rmdir()
-        except OSError:
+            temporary.write_bytes(data)
+            temporary.replace(path)
+        except FileNotFoundError:
+            if attempt == _WRITE_ATTEMPTS - 1:
+                raise
+        else:
             return
-        current = current.parent
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _prune_empty_directory(directory: Path, *, stop_at: Path) -> None:
+    """Remove the object's own directory if it is now empty; best effort."""
+    if directory == stop_at or not directory.is_relative_to(stop_at):
+        return
+    try:
+        directory.rmdir()
+    except OSError:
+        return

@@ -1,0 +1,53 @@
+# ADR-015 — PDF ingestion pipeline
+
+**Status:** Accepted (2026-09-20) · **Resolves provisionally:** OQ-6 (duplicates), OQ-14 (empty
+pages) · **Refs:** §7.3, §7.4, §10, §12, §13, §29, §31, §48, §49, §53, §64, §67.
+
+## Context
+
+Uploads must be validated (extension, MIME type, signature, size, PDF validity, page count), the
+original stored, and the document walked through the §7.3 states by asynchronous processing that
+is idempotent and retry-safe (§48, §49). Extraction must use PyMuPDF, preserve page boundaries
+and order, keep document metadata and record pages without text (§13). A PDF is attacker input
+(§64), so parsing must be bounded (§53). The spec leaves the duplicate policy (OQ-6), the fate of
+pages without text (OQ-14) and the upload transport (OQ-3) open.
+
+## Decision
+
+| Concern             | Decision                                                                                                                                                                                                                                                                                        |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Two halves          | `DocumentIntakeService` (synchronous: parser-free validation, duplicate and quota checks, store, register `UPLOADED`) and `DocumentProcessor` (asynchronous: `VALIDATING`, `EXTRACTING`); both in `doculens.application.ingestion`                                                              |
+| Intake checks       | `.pdf` extension, declared `application/pdf`, non-empty, `MAX_FILE_SIZE_MB`, `%PDF-<digit>` signature; the original is stored before the row is written (§12 order) and removed again if the row fails                                                                                          |
+| Processor checks    | Re-verifies size, signature and the row's content hash against the stored bytes, then opens the file in the parser: corrupted, encrypted, zero pages and `MAX_PAGES_PER_DOCUMENT` are rejected there                                                                                            |
+| Parser boundary     | The child answers with one JSON message (never a pickle) that the parent reads with a byte limit derived from `PDF_MAX_TOTAL_CHARACTERS`; the wall-clock limit covers the whole exchange; per-page and per-document text caps bound worker memory whatever the file contains                    |
+| Parser isolation    | `PyMuPdfExtractor` runs every parse in a spawned child process with `PDF_EXTRACTION_TIMEOUT_SECONDS` (kill on expiry) and, on POSIX, an address-space cap `PDF_EXTRACTION_MEMORY_LIMIT_MB`; a hang or crash fails the document, never the worker                                                |
+| Extraction output   | One `DocumentPage` per page in order with `extracted_text`, `character_count` and metadata `has_text`, `width`, `height`, `rotation`, plus `truncated` / `extraction_error` when they apply; text is NUL-free, newline-normalised and capped by `PDF_MAX_CHARACTERS_PER_PAGE`                   |
+| Document metadata   | New `documents.metadata` JSONB column (migration `0003`): `pdf` (sanitised title, author, subject, keywords, creator, producer, dates, version) and `extraction` (page, text-page and empty-page counts, timestamp). Not in the §7.3 field list; added because §13 requires preserving metadata |
+| State transitions   | Every change is a compare-and-set on the current status (`DocumentRepository.compare_and_update`); the domain table rejects invalid transitions; a run resumes from the current stage; extraction replaces pages in one transaction                                                             |
+| Outcomes            | `PROCESSED`, `FAILED` (the file was rejected: `FAILED` with a safe message, diagnostics only logged), `NO_OP` (nothing left for these stages), `CONCURRENT` (another worker moved it), `SKIPPED` (unknown or being deleted). Infrastructure failures propagate for retry                        |
+| Stage boundary      | Chunking runs as the next stage (ADR-003); embedding and indexing are later phases, so a chunked document rests in `EMBEDDING`, meaning "chunked, next stage pending"                                                                                                                           |
+| Duplicates (OQ-6)   | Provisional: unique on `(owner_id, content_hash)` among non-deleted documents, enforced by a partial unique index and answered as `DUPLICATE_DOCUMENT` (409) carrying the existing id; cross-user duplicates are allowed                                                                        |
+| Empty pages (OQ-14) | Provisional: recorded per page (`has_text = false`) and summarised on the document; a document whose pages all lack text still completes extraction (zero text pages) rather than failing, because the file is valid                                                                            |
+| Quota               | `MAX_DOCUMENTS_PER_USER` is enforced at intake (`DOCUMENT_LIMIT_REACHED`); the §39 usage quotas are a later phase                                                                                                                                                                               |
+| Worker              | `doculens-worker process <document-id>` runs the implemented stages for one document; the queue consumer (ADR-006) will call the same function per job                                                                                                                                          |
+
+## Alternatives considered
+
+- **Parsing in-process.** Simpler and faster, but a malicious PDF could hang or crash the worker
+  and take other jobs with it; §53 and §64 ask for bounded parsing.
+- **Full validation in the API request.** Would put the parser in the request path and exceed
+  the Lambda payload limits that already constrain the upload transport (OQ-3); the state machine
+  (`UPLOADED → VALIDATING`) is designed for validate-after-store.
+- **Storing PDF metadata on the first page's metadata.** Avoids a schema change but hides
+  document-level facts in page rows; §29 asks users to inspect document metadata.
+- **Automatic retry of `FAILED` documents.** Would loop on permanently invalid files; a
+  `FAILED` document is retried only through the explicit reprocess operation (§29).
+
+## Consequences
+
+- New runtime dependency `pymupdf` in `doculens-core`; migration `0003` adds the column and the
+  partial unique index.
+- The upload endpoint itself is not added: its transport (direct multipart versus presigned S3)
+  is `OQ-3`. Both variants end in `DocumentIntakeService.accept` or its presigned equivalent.
+- Job enqueue after intake is ADR-011; until then processing is triggered by the worker command.
+- Chunking (ADR-003) consumes the persisted pages; a document in `CHUNKING` is its input.

@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 
 from doculens.domain.conversations import Citation, Message, MessageRole
 from doculens.domain.documents import DocumentChunk, DocumentPage
+from doculens.domain.errors import ConflictError
 from doculens.domain.ids import new_id
 from doculens.domain.time import utc_now
 from doculens.infrastructure.persistence.database import Database
@@ -72,7 +73,8 @@ async def test_page_numbers_and_chunk_indexes_are_unique_per_document(
 
     async with database.unit_of_work() as uow:
         await uow.document_content.add_pages([page])
-        with pytest.raises(IntegrityError, match="uq_document_pages_document_id_page_number"):
+        # Duplicate page numbers are a domain conflict (two extractions of one document).
+        with pytest.raises(ConflictError):
             await uow.document_content.add_pages([_page(document_id)])
 
     async with database.unit_of_work() as uow:

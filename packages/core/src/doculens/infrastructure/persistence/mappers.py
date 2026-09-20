@@ -1,5 +1,7 @@
 """Translate between domain entities and ORM rows. Nothing else touches both."""
 
+from typing import Any
+
 from doculens.domain.auth import RefreshToken
 from doculens.domain.collections import Collection
 from doculens.domain.conversations import Citation, Conversation, Message
@@ -111,7 +113,28 @@ def document_to_domain(row: DocumentModel) -> Document:
         created_at=row.created_at,
         updated_at=row.updated_at,
         indexed_at=row.indexed_at,
+        metadata=dict(row.document_metadata or {}),
     )
+
+
+def document_values(document: Document) -> dict[str, Any]:
+    """Column values of a document for bulk statements (keys are mapped attribute names)."""
+    return {
+        "collection_id": document.collection_id,
+        "filename": document.filename,
+        "storage_key": document.storage_key,
+        "content_hash": document.content_hash,
+        "mime_type": document.mime_type,
+        "file_size": document.file_size,
+        "page_count": document.page_count,
+        "processing_status": document.processing_status,
+        "processing_error": document.processing_error,
+        "chunk_count": document.chunk_count,
+        "created_at": document.created_at,
+        "updated_at": document.updated_at,
+        "indexed_at": document.indexed_at,
+        "document_metadata": dict(document.metadata),
+    }
 
 
 def document_to_row(document: Document) -> DocumentModel:
@@ -134,6 +157,7 @@ def apply_document(row: DocumentModel, document: Document) -> None:
     row.created_at = document.created_at
     row.updated_at = document.updated_at
     row.indexed_at = document.indexed_at
+    row.document_metadata = dict(document.metadata)
 
 
 def page_to_domain(row: DocumentPageModel) -> DocumentPage:
@@ -169,6 +193,19 @@ def chunk_to_domain(row: DocumentChunkModel) -> DocumentChunk:
         metadata=dict(row.chunk_metadata),
         vector_id=row.vector_id,
     )
+
+
+def chunk_values(chunk: DocumentChunk) -> dict[str, Any]:
+    """Column values of a chunk for bulk statements (keys are mapped attribute names)."""
+    return {
+        "document_id": chunk.document_id,
+        "page_id": chunk.page_id,
+        "chunk_index": chunk.chunk_index,
+        "text": chunk.text,
+        "token_count": chunk.token_count,
+        "chunk_metadata": dict(chunk.metadata),
+        "vector_id": chunk.vector_id,
+    }
 
 
 def chunk_to_row(chunk: DocumentChunk) -> DocumentChunkModel:

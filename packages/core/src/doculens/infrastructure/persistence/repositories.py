@@ -10,14 +10,17 @@ from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import CursorResult, delete, func, select, update
+from sqlalchemy import CursorResult, Table, delete, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from doculens.domain.auth import RefreshToken
 from doculens.domain.collections import Collection
 from doculens.domain.conversations import Citation, Conversation, Message
-from doculens.domain.documents import Document, DocumentChunk, DocumentPage
-from doculens.domain.errors import NotFoundError
+from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
+from doculens.domain.errors import ConflictError, NotFoundError
+from doculens.domain.ingestion import DuplicateDocumentError
 from doculens.domain.users import User
 from doculens.infrastructure.persistence import mappers
 from doculens.infrastructure.persistence.models import (
@@ -75,6 +78,11 @@ class SqlAlchemyUserRepository:
     async def add(self, user: User) -> None:
         self._session.add(mappers.user_to_row(user))
         await self._session.flush()
+
+    async def lock(self, user_id: UUID) -> None:
+        await self._session.execute(
+            select(UserModel.id).where(UserModel.id == user_id).with_for_update()
+        )
 
     async def get(self, user_id: UUID) -> User | None:
         row = await self._session.get(UserModel, user_id)
@@ -137,13 +145,56 @@ class SqlAlchemyCollectionRepository:
         return rows.first()
 
 
+ACTIVE_CONTENT_INDEX = "uq_documents_owner_id_content_hash_active"
+PAGE_NUMBER_INDEX = "uq_document_pages_document_id_page_number"
+
+
 class SqlAlchemyDocumentRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def add(self, document: Document) -> None:
-        self._session.add(mappers.document_to_row(document))
+        try:
+            async with self._session.begin_nested():
+                self._session.add(mappers.document_to_row(document))
+                await self._session.flush()
+        except IntegrityError as exc:
+            if ACTIVE_CONTENT_INDEX not in str(exc.orig):
+                raise
+            existing = await self.find_by_content_hash(document.owner_id, document.content_hash)
+            raise DuplicateDocumentError(existing.id if existing else None) from exc
+
+    async def get_for_processing(self, document_id: UUID) -> Document | None:
+        row = await self._session.get(DocumentModel, document_id)
+        return mappers.document_to_domain(row) if row is not None else None
+
+    async def find_by_content_hash(self, owner_id: UUID, content_hash: str) -> Document | None:
+        rows = await self._session.scalars(
+            select(DocumentModel)
+            .where(
+                DocumentModel.owner_id == owner_id,
+                DocumentModel.content_hash == content_hash,
+                DocumentModel.processing_status != ProcessingStatus.DELETED,
+            )
+            .order_by(DocumentModel.created_at)
+            .limit(1)
+        )
+        row = rows.first()
+        return mappers.document_to_domain(row) if row is not None else None
+
+    async def compare_and_update(
+        self, document: Document, *, expected_status: ProcessingStatus
+    ) -> bool:
+        result = await self._session.execute(
+            update(DocumentModel)
+            .where(
+                DocumentModel.id == document.id,
+                DocumentModel.processing_status == expected_status,
+            )
+            .values(**mappers.document_values(document))
+        )
         await self._session.flush()
+        return int(cast("CursorResult[Any]", result).rowcount or 0) == 1
 
     async def get(self, owner_id: UUID, document_id: UUID) -> Document | None:
         row = await self._owned(owner_id, document_id)
@@ -194,11 +245,36 @@ class SqlAlchemyDocumentContentRepository:
         self._session = session
 
     async def add_pages(self, pages: Sequence[DocumentPage]) -> None:
-        self._session.add_all([mappers.page_to_row(page) for page in pages])
-        await self._session.flush()
+        try:
+            async with self._session.begin_nested():
+                self._session.add_all([mappers.page_to_row(page) for page in pages])
+                await self._session.flush()
+        except IntegrityError as exc:
+            if PAGE_NUMBER_INDEX not in str(exc.orig):
+                raise
+            # Another extraction of the same document landed first (unique page numbers).
+            raise ConflictError from exc
 
     async def add_chunks(self, chunks: Sequence[DocumentChunk]) -> None:
         self._session.add_all([mappers.chunk_to_row(chunk) for chunk in chunks])
+        await self._session.flush()
+
+    async def replace_chunks(self, document_id: UUID, chunks: Sequence[DocumentChunk]) -> None:
+        # Core statements on the table: the JSONB column is "metadata", a name the ORM entity
+        # reserves for its registry, so the mapped class cannot be used for these statements.
+        table = cast("Table", DocumentChunkModel.__table__)
+        keep = [chunk.id for chunk in chunks]
+        stale = delete(table).where(table.c.document_id == document_id)
+        if keep:
+            stale = stale.where(table.c.id.not_in(keep))
+        await self._session.execute(stale)
+        for chunk in chunks:
+            values = mappers.chunk_values(chunk)
+            values["metadata"] = values.pop("chunk_metadata")
+            statement = pg_insert(table).values(id=chunk.id, **values)
+            await self._session.execute(
+                statement.on_conflict_do_update(index_elements=[table.c.id], set_=values)
+            )
         await self._session.flush()
 
     async def list_pages(self, owner_id: UUID, document_id: UUID) -> list[DocumentPage]:
