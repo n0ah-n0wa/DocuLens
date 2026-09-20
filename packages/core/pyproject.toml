@@ -5,9 +5,11 @@ description = "DocuLens core: domain, application and infrastructure layers, ind
 requires-python = ">=3.12"
 dependencies = [
     "alembic==1.20.0",
+    "argon2-cffi==25.1.0",
     "asyncpg==0.31.0",
     "pydantic==2.13.5",
     "pydantic-settings==2.15.0",
+    "pyjwt==2.14.0",
     "sqlalchemy[asyncio]==2.0.54",
     "structlog==26.1.0",
 ]

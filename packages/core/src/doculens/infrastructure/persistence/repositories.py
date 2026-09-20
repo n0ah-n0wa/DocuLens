@@ -6,11 +6,14 @@ so callers only ever handle domain entities.
 """
 
 from collections.abc import Sequence
+from datetime import datetime
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from doculens.domain.auth import RefreshToken
 from doculens.domain.collections import Collection
 from doculens.domain.conversations import Citation, Conversation, Message
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage
@@ -25,8 +28,44 @@ from doculens.infrastructure.persistence.models import (
     DocumentModel,
     DocumentPageModel,
     MessageModel,
+    RefreshTokenModel,
     UserModel,
 )
+
+
+class SqlAlchemyRefreshTokenRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, token: RefreshToken) -> None:
+        self._session.add(mappers.refresh_token_to_row(token))
+        await self._session.flush()
+
+    async def get(self, token_id: UUID) -> RefreshToken | None:
+        row = await self._session.get(RefreshTokenModel, token_id)
+        return mappers.refresh_token_to_domain(row) if row is not None else None
+
+    async def rotate(self, token_id: UUID, successor_id: UUID, *, now: datetime) -> bool:
+        result = await self._session.execute(
+            update(RefreshTokenModel)
+            .where(
+                RefreshTokenModel.id == token_id,
+                RefreshTokenModel.revoked_at.is_(None),
+                RefreshTokenModel.replaced_by_id.is_(None),
+            )
+            .values(replaced_by_id=successor_id, revoked_at=now)
+        )
+        await self._session.flush()
+        return int(cast("CursorResult[Any]", result).rowcount or 0) == 1
+
+    async def revoke_family(self, family_id: UUID, *, now: datetime) -> int:
+        result = await self._session.execute(
+            update(RefreshTokenModel)
+            .where(RefreshTokenModel.family_id == family_id, RefreshTokenModel.revoked_at.is_(None))
+            .values(revoked_at=now)
+        )
+        await self._session.flush()
+        return int(cast("CursorResult[Any]", result).rowcount or 0)
 
 
 class SqlAlchemyUserRepository:

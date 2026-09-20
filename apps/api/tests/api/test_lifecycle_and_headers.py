@@ -15,6 +15,7 @@ from doculens_api.settings import ApiSettings
 pytestmark = pytest.mark.api
 
 DB_URL = SecretStr("postgresql+asyncpg://doculens:not-a-secret@127.0.0.1:1/doculens")
+JWT = SecretStr("lifecycle-test-secret-that-is-at-least-32-bytes")
 
 
 def _entries(output: str) -> list[dict[str, object]]:
@@ -44,10 +45,18 @@ def test_every_response_carries_baseline_security_headers(client: TestClient) ->
 
 
 def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
-    local = ApiSettings(_env_file=None, app_env=Environment.LOCAL, database_url=DB_URL)
-    staging = ApiSettings(_env_file=None, app_env=Environment.STAGING, database_url=DB_URL)
+    local = ApiSettings(
+        _env_file=None, app_env=Environment.LOCAL, database_url=DB_URL, jwt_secret=JWT
+    )
+    staging = ApiSettings(
+        _env_file=None, app_env=Environment.STAGING, database_url=DB_URL, jwt_secret=JWT
+    )
     opted_in = ApiSettings(
-        _env_file=None, app_env=Environment.PRODUCTION, api_docs_enabled=True, database_url=DB_URL
+        _env_file=None,
+        app_env=Environment.PRODUCTION,
+        api_docs_enabled=True,
+        database_url=DB_URL,
+        jwt_secret=JWT,
     )
 
     assert local.docs_enabled is True
@@ -79,9 +88,13 @@ def test_a_handler_may_override_a_default_security_header(app: FastAPI) -> None:
 
 
 def test_probe_timeout_is_configurable_and_bounded() -> None:
-    configured = ApiSettings(_env_file=None, health_probe_timeout_seconds=0.5, database_url=DB_URL)
+    configured = ApiSettings(
+        _env_file=None, health_probe_timeout_seconds=0.5, database_url=DB_URL, jwt_secret=JWT
+    )
 
     assert configured.health_probe_timeout_seconds == 0.5
 
     with pytest.raises(ValueError, match="health_probe_timeout_seconds"):
-        ApiSettings(_env_file=None, health_probe_timeout_seconds=0, database_url=DB_URL)
+        ApiSettings(
+            _env_file=None, health_probe_timeout_seconds=0, database_url=DB_URL, jwt_secret=JWT
+        )

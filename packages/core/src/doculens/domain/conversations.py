@@ -10,6 +10,17 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
+from doculens.domain.errors import NotFoundError
+
+MAX_CONVERSATION_TITLE_LENGTH = 200
+
+
+class ConversationNotFoundError(NotFoundError):
+    """Also raised for conversations owned by someone else: existence is never disclosed (§9)."""
+
+    code = "CONVERSATION_NOT_FOUND"
+    default_message = "The conversation was not found."
+
 
 class MessageRole(StrEnum):
     USER = "USER"

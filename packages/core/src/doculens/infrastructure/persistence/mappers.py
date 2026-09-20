@@ -1,5 +1,6 @@
 """Translate between domain entities and ORM rows. Nothing else touches both."""
 
+from doculens.domain.auth import RefreshToken
 from doculens.domain.collections import Collection
 from doculens.domain.conversations import Citation, Conversation, Message
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage
@@ -12,8 +13,34 @@ from doculens.infrastructure.persistence.models import (
     DocumentModel,
     DocumentPageModel,
     MessageModel,
+    RefreshTokenModel,
     UserModel,
 )
+
+
+def refresh_token_to_domain(row: RefreshTokenModel) -> RefreshToken:
+    return RefreshToken(
+        id=row.id,
+        user_id=row.user_id,
+        family_id=row.family_id,
+        issued_at=row.issued_at,
+        expires_at=row.expires_at,
+        revoked_at=row.revoked_at,
+        replaced_by_id=row.replaced_by_id,
+    )
+
+
+def refresh_token_to_row(token: RefreshToken) -> RefreshTokenModel:
+    row = RefreshTokenModel(id=token.id, user_id=token.user_id, family_id=token.family_id)
+    apply_refresh_token(row, token)
+    return row
+
+
+def apply_refresh_token(row: RefreshTokenModel, token: RefreshToken) -> None:
+    row.issued_at = token.issued_at
+    row.expires_at = token.expires_at
+    row.revoked_at = token.revoked_at
+    row.replaced_by_id = token.replaced_by_id
 
 
 def user_to_domain(row: UserModel) -> User:

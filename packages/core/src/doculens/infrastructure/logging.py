@@ -45,11 +45,20 @@ def configure_logging(
 
     if log_format is LogFormat.JSON:
         rendering: list[Processor] = [
-            structlog.processors.dict_tracebacks,
+            # Structured tracebacks without local variables: locals would leak passwords, tokens
+            # and document text into the logs (§68).
+            structlog.processors.ExceptionRenderer(
+                structlog.tracebacks.ExceptionDictTransformer(show_locals=False)
+            ),
             structlog.processors.JSONRenderer(),
         ]
     else:
-        rendering = [structlog.dev.ConsoleRenderer(event_key="message")]
+        rendering = [
+            structlog.dev.ConsoleRenderer(
+                event_key="message",
+                exception_formatter=structlog.dev.plain_traceback,
+            )
+        ]
 
     structlog.configure(
         processors=[*shared_processors, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
@@ -60,7 +69,9 @@ def configure_logging(
 
     formatter = structlog.stdlib.ProcessorFormatter(
         processors=[structlog.stdlib.ProcessorFormatter.remove_processors_meta, *rendering],
-        foreign_pre_chain=shared_processors,
+        # Standard-library records (application-layer security events) carry their fields in
+        # ``extra``; ExtraAdder lifts them into the structured entry.
+        foreign_pre_chain=[structlog.stdlib.ExtraAdder(), *shared_processors],
     )
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)

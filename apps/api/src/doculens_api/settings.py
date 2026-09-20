@@ -1,8 +1,10 @@
 """Settings owned by the API process, on top of the core settings."""
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from doculens.infrastructure.config import CoreSettings
+
+MIN_JWT_SECRET_LENGTH = 32
 
 
 class ApiSettings(CoreSettings):
@@ -26,6 +28,24 @@ class ApiSettings(CoreSettings):
         le=30,
         description="Upper bound for each dependency probe run by /health/ready.",
     )
+
+    jwt_secret: SecretStr = Field(
+        min_length=MIN_JWT_SECRET_LENGTH,
+        description="HS256 signing key for access and refresh tokens (§8, §54).",
+    )
+    jwt_issuer: str = Field(default="doculens", min_length=1, max_length=100)
+    jwt_audience: str = Field(default="doculens-api", min_length=1, max_length=100)
+    access_token_ttl_seconds: int = Field(
+        default=900, ge=60, le=3600, description="Short-lived access tokens (§8)."
+    )
+    refresh_token_ttl_seconds: int = Field(
+        default=30 * 24 * 3600, ge=3600, le=90 * 24 * 3600, description="Refresh lifetime (§8)."
+    )
+    password_min_length: int = Field(default=12, ge=8, le=128)
+    auth_rate_limit_attempts: int = Field(
+        default=10, ge=1, le=1000, description="Auth requests allowed per key per window (§37)."
+    )
+    auth_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
 
     @property
     def docs_enabled(self) -> bool:

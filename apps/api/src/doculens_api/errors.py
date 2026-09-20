@@ -26,16 +26,21 @@ from doculens.domain.errors import (
     InvalidInputError,
     NotFoundError,
     PermissionDeniedError,
+    RateLimitedError,
+    UnauthenticatedError,
 )
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 DOMAIN_ERROR_STATUS: Mapping[type[DomainError], HTTPStatus] = {
     InvalidInputError: HTTPStatus.BAD_REQUEST,
+    UnauthenticatedError: HTTPStatus.UNAUTHORIZED,
     NotFoundError: HTTPStatus.NOT_FOUND,
     ConflictError: HTTPStatus.CONFLICT,
     PermissionDeniedError: HTTPStatus.FORBIDDEN,
+    RateLimitedError: HTTPStatus.TOO_MANY_REQUESTS,
 }
+BEARER_CHALLENGE = {"WWW-Authenticate": "Bearer"}
 DEFAULT_DOMAIN_ERROR_STATUS = HTTPStatus.BAD_REQUEST
 
 
@@ -134,7 +139,15 @@ def register_error_handlers(app: FastAPI, *, header_name: str) -> None:
     async def handle_domain_error(request: Request, exc: Exception) -> JSONResponse:
         error = exc if isinstance(exc, DomainError) else DomainError()
         logger.info("domain error", operation="http.error", error_code=error.code)
-        return error_response(request, ApiError.from_domain_error(error), header_name=header_name)
+        api_error = ApiError.from_domain_error(error)
+        extra_headers: dict[str, str] | None = None
+        if api_error.status_code == HTTPStatus.UNAUTHORIZED:
+            extra_headers = BEARER_CHALLENGE
+        elif isinstance(error, RateLimitedError):
+            extra_headers = {"Retry-After": str(error.retry_after_seconds)}
+        return error_response(
+            request, api_error, header_name=header_name, extra_headers=extra_headers
+        )
 
     async def handle_validation_error(request: Request, exc: Exception) -> JSONResponse:
         details = [

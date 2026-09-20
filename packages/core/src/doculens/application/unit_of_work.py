@@ -9,10 +9,12 @@ nothing is durable until ``commit`` is awaited. Leaving the context without comm
 """
 
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
 
+from doculens.domain.auth import RefreshToken
 from doculens.domain.collections import Collection
 from doculens.domain.conversations import Citation, Conversation, Message
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage
@@ -24,6 +26,24 @@ class UserRepository(Protocol):
     async def get(self, user_id: UUID) -> User | None: ...
     async def get_by_email(self, email: str) -> User | None: ...
     async def update(self, user: User) -> None: ...
+
+
+class RefreshTokenRepository(Protocol):
+    """Durable refresh-token records so revocation survives restarts (§8, §47)."""
+
+    async def add(self, token: RefreshToken) -> None: ...
+    async def get(self, token_id: UUID) -> RefreshToken | None: ...
+    async def rotate(self, token_id: UUID, successor_id: UUID, *, now: datetime) -> bool:
+        """Atomically mark the token as replaced, only if it is still unconsumed.
+
+        Returns ``False`` when the token was already rotated or revoked (by a concurrent request
+        or an attacker), so the caller can treat the presentation as reuse.
+        """
+        ...
+
+    async def revoke_family(self, family_id: UUID, *, now: datetime) -> int:
+        """Revoke every still-active token of the family; returns how many were revoked."""
+        ...
 
 
 class CollectionRepository(Protocol):
@@ -87,6 +107,8 @@ class MessageRepository(Protocol):
 class UnitOfWork(Protocol):
     @property
     def users(self) -> UserRepository: ...
+    @property
+    def refresh_tokens(self) -> RefreshTokenRepository: ...
     @property
     def collections(self) -> CollectionRepository: ...
     @property

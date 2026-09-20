@@ -51,15 +51,15 @@ Principles the specification fixes (§1, §4, §90):
 
 **Implemented.**
 
-| Component              | Path                       | Package / import name                 | Role                                             |
-| ---------------------- | -------------------------- | ------------------------------------- | ------------------------------------------------ |
-| Core                   | `packages/core`            | `doculens-core` / `doculens`          | domain, application and infrastructure layers    |
-| API                    | `apps/api`                 | `doculens-api` / `doculens_api`       | FastAPI interface layer (health probes only)     |
-| Worker                 | `services/document-worker` | `doculens-worker` / `doculens_worker` | queue-driven interface layer (entrypoint only)   |
-| Web                    | `apps/web`                 | `@doculens/web`                       | Next.js application (placeholder page)           |
-| Shared contracts       | `packages/shared-types`    | `@doculens/shared-types`              | TypeScript API contracts (error envelope only)   |
-| Infrastructure         | `infrastructure/terraform` | —                                     | staging and production roots (no resources yet)  |
-| Images and local stack | `docker/`                  | —                                     | API and worker images; PostgreSQL, Redis, Chroma |
+| Component              | Path                       | Package / import name                 | Role                                                                |
+| ---------------------- | -------------------------- | ------------------------------------- | ------------------------------------------------------------------- |
+| Core                   | `packages/core`            | `doculens-core` / `doculens`          | domain, application and infrastructure layers                       |
+| API                    | `apps/api`                 | `doculens-api` / `doculens_api`       | FastAPI: health, auth, users, collections, documents, conversations |
+| Worker                 | `services/document-worker` | `doculens-worker` / `doculens_worker` | queue-driven interface layer (entrypoint only)                      |
+| Web                    | `apps/web`                 | `@doculens/web`                       | Next.js application (placeholder page)                              |
+| Shared contracts       | `packages/shared-types`    | `@doculens/shared-types`              | TypeScript API contracts (error envelope only)                      |
+| Infrastructure         | `infrastructure/terraform` | —                                     | staging and production roots (no resources yet)                     |
+| Images and local stack | `docker/`                  | —                                     | API and worker images; PostgreSQL, Redis, Chroma                    |
 
 The layout adapts §71 as recorded in [ADR-001](decisions/ADR-001-backend-architecture.md): the
 framework-free core is its own package so that packaging itself enforces the §72 boundary.
@@ -97,7 +97,8 @@ in more than one place.
 ## 4. Frontend / backend boundary
 
 **Implemented:** public routes are versioned under `/api/v1` (§33–§34) and platform probes live
-under `/health` (`/health/live`, `/health/ready`); no versioned route exists yet. Every response
+under `/health` (`/health/live`, `/health/ready`); versioned routes exist for authentication,
+the current user, collections, documents (metadata) and conversations with messages. Every response
 carries a request ID (honoured from a well-formed incoming header, otherwise generated) that is
 bound to the logging context and returned in the response header (§36). Every failure, whether a
 domain error, request validation, an HTTP error or an unhandled exception, answers with the §35
@@ -433,26 +434,40 @@ triggered by a scheduled sweep or manually is decided with ADR-006.
 
 ## 10. Authentication
 
-**Planned** (§8). Nothing is implemented yet.
+**Implemented** (§8, [ADR-007](decisions/ADR-007-authentication-strategy.md)): registration, login,
+refresh and logout under `/api/v1/auth`, and `GET /api/v1/users/me`. Passwords are hashed with
+Argon2id in a worker thread and rehashed when parameters change; emails are normalised and
+validated; the password policy is length-based and configurable. Access and refresh tokens are
+HS256 JWTs carrying `iss`, `aud`, `sub`, `jti`, `iat`, `exp` and `typ`, all required and verified on
+every request. Access tokens are short-lived (15 minutes by default) and not stored; refresh tokens
+are durable rows grouped into a family per login, rotated on every use through an atomic
+compare-and-set, revoked on logout, and a reused (or concurrently presented) token revokes the
+whole family. A family has an absolute lifetime fixed at login; rotation never extends it. `SUSPENDED` accounts are refused with 403 everywhere and
+`DELETED` accounts behave as unknown credentials. Unknown email and wrong password are
+indistinguishable and take the same time. Failures answer 401 with `WWW-Authenticate: Bearer` and
+stable codes; credentials and tokens are never logged (§68), while registration, login, failed
+login, token reuse and logout are logged as security events carrying identifiers only. Every auth
+endpoint is rate limited per client address, and login also per account, answering 429
+`RATE_LIMITED` with `Retry-After` (§37); concurrent password hashing is bounded so a login flood
+cannot exhaust memory.
 
-- Registration, login, logout, access token, refresh token, token rotation, password validation and
-  account-status validation (`ACTIVE`, `SUSPENDED`, `DELETED`).
-- Passwords hashed with Argon2id (or an equivalent modern algorithm); never stored in plaintext.
-- JWTs carry issuer, audience, subject, issued-at, expiration and a token identifier where
-  appropriate; the API validates issuer and audience on every request. Access tokens are
-  short-lived; refresh tokens are longer-lived, rotated on use and revocable through the durable
-  refresh-token record (§8, §47).
-- Authentication endpoints are rate limited (§37); tokens and passwords are never logged (§68).
+**Planned:** the Redis-backed limiter store (§47) replacing the in-process one so limits are
+fleet-wide; trusting proxy forwarding headers for the client address once `OQ-19` fixes the edge.
 
-**Pending:** `OQ-12` (JWT library; whether access tokens are denylisted on logout), `OQ-19` (token
-storage in the browser and the resulting CSRF requirements), `OQ-24` (account deletion, email
-verification, password reset are not specified).
+**Pending:** `OQ-19` (token storage in the browser and the resulting CSRF requirements), `OQ-24`
+(account deletion, email verification, password reset are not specified).
 
 ---
 
 ## 11. Authorization
 
-**Planned** (§9, §16). Nothing is implemented yet.
+**Implemented** (§9, [ADR-013](decisions/ADR-013-authorization-responses.md)) for collections,
+documents, conversations, messages and citations: use cases take the acting user's ID from the
+verified bearer token and every repository read of a user-owned resource requires the owner, so a
+foreign resource is indistinguishable from a missing one (404 with the same code and message).
+Cross-resource references (moving into or creating inside a collection) are verified the same way.
+Negative tests cover every route for a second user and for anonymous callers, both in memory and
+against PostgreSQL. Vector and object-store scoping (§11, §16) arrive with those adapters.
 
 ```mermaid
 sequenceDiagram
@@ -642,9 +657,10 @@ Trust boundaries fixed by the specification (§22, §53, §68):
 | Non-root, minimal, pinned container images         | Implemented     |
 | Local services bound to loopback only              | Implemented     |
 | Input validation, upload validation                | Planned         |
-| Authentication, authorization, ownership checks    | Planned         |
+| Authentication, authorization, ownership checks    | Implemented     |
 | Prompt-injection separation and adversarial tests  | Planned         |
-| Rate limiting, quotas, AI cost controls            | Planned         |
+| Rate limiting of authentication endpoints          | Implemented     |
+| Rate limiting elsewhere, quotas, AI cost controls  | Planned         |
 | Bounded PDF parsing in an isolated worker          | Planned         |
 | Text-only rendering of AI and document content     | Planned         |
 | Least-privilege IAM, Secrets Manager               | Planned         |
@@ -654,16 +670,16 @@ Trust boundaries fixed by the specification (§22, §53, §68):
 
 ## 16. Status summary
 
-| Area                      | Implemented                                                                                                | Planned                                               | Pending decisions                             |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------- |
-| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots | ports, adapters                                       | —                                             |
-| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                  | text rendering, versioned routes                      | OQ-3, OQ-3b, OQ-10, OQ-19                     |
-| Ingestion                 | —                                                                                                          | §10–§16 pipeline, staleness metadata                  | OQ-3, OQ-5, OQ-6, OQ-7, OQ-14                 |
-| RAG                       | —                                                                                                          | §17–§27 components, quotas, usage ledger              | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
-| Async processing          | worker deployable                                                                                          | queue, guarded transitions, retries, DLQ              | OQ-2, OQ-27 (ADR-011)                         |
-| Persistence               | §7 schema, Alembic migration, repositories, unit of work, DB probe                                         | usage ledger, refresh-token record, consistency model | OQ-7, OQ-8, OQ-13, OQ-18, OQ-28 (ADR-012)     |
-| Authentication            | —                                                                                                          | §8 with durable refresh tokens                        | OQ-12, OQ-19, OQ-24                           |
-| Authorization             | —                                                                                                          | §9, §16, store-level scoping                          | —                                             |
-| AWS                       | Terraform roots                                                                                            | §57 modules, VPC egress, OIDC                         | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28  |
-| CI/CD                     | CI pipeline                                                                                                | integration job, CD pipeline                          | —                                             |
-| Observability             | structured JSON logs, request correlation, access log                                                      | metrics, tracing, queue correlation, DLQ alarms       | OQ-21                                         |
+| Area                      | Implemented                                                                                                     | Planned                                               | Pending decisions                             |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------- |
+| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots      | ports, adapters                                       | —                                             |
+| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                       | text rendering, versioned routes                      | OQ-3, OQ-3b, OQ-10, OQ-19                     |
+| Ingestion                 | —                                                                                                               | §10–§16 pipeline, staleness metadata                  | OQ-3, OQ-5, OQ-6, OQ-7, OQ-14                 |
+| RAG                       | —                                                                                                               | §17–§27 components, quotas, usage ledger              | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
+| Async processing          | worker deployable                                                                                               | queue, guarded transitions, retries, DLQ              | OQ-2, OQ-27 (ADR-011)                         |
+| Persistence               | §7 schema, Alembic migration, repositories, unit of work, DB probe                                              | usage ledger, refresh-token record, consistency model | OQ-7, OQ-8, OQ-13, OQ-18, OQ-28 (ADR-012)     |
+| Authentication            | §8 registration, login, atomic refresh rotation, logout, Argon2id, JWT claims, auth rate limiting, audit events | Redis limiter store                                   | OQ-12, OQ-19, OQ-24                           |
+| Authorization             | §9 ownership on collections, documents, conversations, messages, citations                                      | vector and object-store scoping                       | —                                             |
+| AWS                       | Terraform roots                                                                                                 | §57 modules, VPC egress, OIDC                         | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28  |
+| CI/CD                     | CI pipeline                                                                                                     | integration job, CD pipeline                          | —                                             |
+| Observability             | structured JSON logs, request correlation, access log                                                           | metrics, tracing, queue correlation, DLQ alarms       | OQ-21                                         |

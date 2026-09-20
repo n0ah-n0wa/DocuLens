@@ -11,12 +11,14 @@ from doculens.infrastructure.persistence.repositories import (
     SqlAlchemyDocumentContentRepository,
     SqlAlchemyDocumentRepository,
     SqlAlchemyMessageRepository,
+    SqlAlchemyRefreshTokenRepository,
     SqlAlchemyUserRepository,
 )
 
 
 class SqlAlchemyUnitOfWork:
     users: SqlAlchemyUserRepository
+    refresh_tokens: SqlAlchemyRefreshTokenRepository
     collections: SqlAlchemyCollectionRepository
     documents: SqlAlchemyDocumentRepository
     document_content: SqlAlchemyDocumentContentRepository
@@ -31,6 +33,7 @@ class SqlAlchemyUnitOfWork:
         session = self._session_factory()
         self._session = session
         self.users = SqlAlchemyUserRepository(session)
+        self.refresh_tokens = SqlAlchemyRefreshTokenRepository(session)
         self.collections = SqlAlchemyCollectionRepository(session)
         self.documents = SqlAlchemyDocumentRepository(session)
         self.document_content = SqlAlchemyDocumentContentRepository(session)

@@ -9,37 +9,59 @@ connection is opened until first use) and disposed of when the application shuts
 
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 import structlog
 from fastapi import FastAPI
 
+from doculens.application.auth import AuthConfig, AuthService
+from doculens.application.collections import CollectionService
+from doculens.application.conversations import ConversationService
+from doculens.application.documents import DocumentService
 from doculens.application.health import HealthProbe, ReadinessService
+from doculens.application.ratelimit import RateLimiter
+from doculens.application.unit_of_work import UnitOfWorkFactory
+from doculens.domain.auth import PasswordPolicy
+from doculens.domain.time import utc_now
 from doculens.infrastructure.config import load_settings
 from doculens.infrastructure.logging import configure_logging
 from doculens.infrastructure.persistence.database import Database, DatabaseProbe
+from doculens.infrastructure.ratelimit import InMemoryRateLimiter
+from doculens.infrastructure.security.passwords import Argon2PasswordHasher
+from doculens.infrastructure.security.tokens import JwtTokenCodec
 from doculens_api import SERVICE_NAME, __version__
 from doculens_api.dependencies import AppComponents
 from doculens_api.errors import DEFAULT_ERROR_RESPONSES, register_error_handlers
 from doculens_api.middleware.request_context import RequestContextMiddleware
 from doculens_api.middleware.security_headers import SecurityHeadersMiddleware
-from doculens_api.routers import health
+from doculens_api.routers import auth, collections, conversations, documents, health, users
 from doculens_api.settings import ApiSettings
 
 OPENAPI_TAGS = [
     {"name": "health", "description": "Liveness and readiness probes for the platform."},
+    {"name": "auth", "description": "Registration, login, token refresh and logout."},
+    {"name": "users", "description": "The authenticated user's account."},
+    {"name": "collections", "description": "Groupings of the user's documents."},
+    {"name": "documents", "description": "Document metadata and processing status."},
+    {"name": "conversations", "description": "Conversations and their cited messages."},
 ]
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 
 def create_app(
-    settings: ApiSettings | None = None, *, probes: Sequence[HealthProbe] | None = None
+    settings: ApiSettings | None = None,
+    *,
+    probes: Sequence[HealthProbe] | None = None,
+    unit_of_work_factory: UnitOfWorkFactory | None = None,
+    rate_limiter: RateLimiter | None = None,
 ) -> FastAPI:
     """Build a fully wired application instance.
 
     ``settings`` defaults to the validated environment configuration. ``probes`` are the dependency
-    checks exposed by ``/health/ready``; ``None`` means the real dependencies (the database), while
-    tests pass an explicit list of fakes.
+    checks exposed by ``/health/ready`` (``None`` means the real database). ``unit_of_work_factory``
+    defaults to the PostgreSQL unit of work; tests may pass an in-memory one. ``rate_limiter``
+    defaults to the in-process limiter (§37) until the Redis adapter exists.
     """
     resolved = settings if settings is not None else load_settings(ApiSettings)
     configure_logging(
@@ -50,12 +72,36 @@ def create_app(
     )
     database = Database(resolved)
     readiness_probes = probes if probes is not None else [DatabaseProbe(database)]
+    unit_of_work = (
+        unit_of_work_factory if unit_of_work_factory is not None else database.unit_of_work
+    )
+    auth_service = AuthService(
+        unit_of_work=unit_of_work,
+        hasher=Argon2PasswordHasher(),
+        codec=JwtTokenCodec(
+            secret=resolved.jwt_secret.get_secret_value(),
+            issuer=resolved.jwt_issuer,
+            audience=resolved.jwt_audience,
+            clock=utc_now,
+        ),
+        clock=utc_now,
+        config=AuthConfig(
+            access_token_ttl=timedelta(seconds=resolved.access_token_ttl_seconds),
+            refresh_token_ttl=timedelta(seconds=resolved.refresh_token_ttl_seconds),
+            password_policy=PasswordPolicy(min_length=resolved.password_min_length),
+        ),
+    )
     components = AppComponents(
         settings=resolved,
         database=database,
         readiness=ReadinessService(
             readiness_probes, timeout_seconds=resolved.health_probe_timeout_seconds
         ),
+        auth=auth_service,
+        collections=CollectionService(unit_of_work=unit_of_work),
+        documents=DocumentService(unit_of_work=unit_of_work),
+        conversations=ConversationService(unit_of_work=unit_of_work),
+        rate_limiter=rate_limiter if rate_limiter is not None else InMemoryRateLimiter(),
     )
 
     @asynccontextmanager
@@ -92,6 +138,11 @@ def create_app(
 
     register_error_handlers(app, header_name=resolved.request_id_header)
     app.include_router(health.router)
+    app.include_router(auth.router)
+    app.include_router(users.router)
+    app.include_router(collections.router)
+    app.include_router(documents.router)
+    app.include_router(conversations.router)
 
     # Middleware added later wraps the earlier ones; the request-context middleware goes last so
     # that it is outermost and every response, including those from other middleware, is

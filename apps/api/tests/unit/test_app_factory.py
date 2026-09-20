@@ -22,6 +22,10 @@ def test_default_settings_come_from_the_environment(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("API_DOCS_ENABLED", "false")
     monkeypatch.setenv("LOG_LEVEL", "WARNING")
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@127.0.0.1:1/doculens")
+    monkeypatch.setenv(
+        "JWT_SECRET",
+        "env-test-secret-that-is-at-least-32-bytes-long",  # gitleaks:allow
+    )
 
     app = create_app()
 
@@ -32,7 +36,10 @@ def test_default_settings_come_from_the_environment(monkeypatch: pytest.MonkeyPa
 def test_request_id_header_name_is_validated(settings: ApiSettings) -> None:
     with pytest.raises(ValueError, match="request_id_header"):
         ApiSettings(
-            _env_file=None, database_url=settings.database_url, request_id_header="not a header"
+            _env_file=None,
+            database_url=settings.database_url,
+            jwt_secret=settings.jwt_secret,
+            request_id_header="not a header",
         )
 
 

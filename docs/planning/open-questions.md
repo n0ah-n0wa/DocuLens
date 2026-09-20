@@ -271,6 +271,9 @@ providers on a manual/nightly workflow with results committed to `docs/eval/`.
 **Items:** account deletion endpoint (implied by user status but absent from §33 and §69); email
 verification and password reset (absent from §8); an admin role (implied by §28, never defined).
 **Proposed default:** Out of scope for v1 unless confirmed; `DELETED` status reserved; no admin role.
+**Security review note (2026-09-20):** registration answers 409 for a known email (§33), which
+reveals account existence; the neutral alternative needs email verification, so it waits on this
+question. Until then the per-address rate limit bounds enumeration speed (ADR-007).
 
 ### OQ-25 — LangChain scope
 
@@ -339,3 +342,4 @@ the fallback of citing all surviving chunks when the provider cannot follow the 
 | OQ-26 | Provisional (Phase 0): `local` is docker compose; Terraform roots exist for staging and production only.                                                                                                                                                                                                                                                                     | 2026-09-19 | —       |
 | OQ-7  | Provisional (persistence phase, reversible): the schema keeps the `DELETING`/`DELETED` states, cascades owned content (pages, chunks, messages, citations), sets `citations.chunk_id` to NULL when a chunk is re-indexed, and refuses to hard-delete a cited document (`ON DELETE RESTRICT`). No deletion use case exists yet; tombstoning versus hard delete is still open. | 2026-09-20 | —       |
 | OQ-8  | Provisional (persistence phase): `collection_id` is nullable on documents and conversations because §30 allows detaching a document. How a conversation scopes several selected documents is still open; a join table can be added without changing existing rows.                                                                                                           | 2026-09-20 | —       |
+| OQ-12 | Decided (ADR-007): PyJWT with HS256; access tokens live 15 minutes by default and are not denylisted; refresh tokens are durable rows rotated on every use, revoked on logout, and reuse of a rotated token revokes the whole session family.                                                                                                                                | 2026-09-20 | ADR-007 |

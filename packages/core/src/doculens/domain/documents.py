@@ -11,7 +11,16 @@ from enum import StrEnum
 from typing import Self
 from uuid import UUID
 
-from doculens.domain.errors import ConflictError
+from doculens.domain.errors import ConflictError, NotFoundError
+
+MAX_FILENAME_LENGTH = 255
+
+
+class DocumentNotFoundError(NotFoundError):
+    """Also raised for documents owned by someone else: existence is never disclosed (§9)."""
+
+    code = "DOCUMENT_NOT_FOUND"
+    default_message = "The document was not found."
 
 
 class ProcessingStatus(StrEnum):
@@ -109,8 +118,10 @@ class DocumentChunk:
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
+    "MAX_FILENAME_LENGTH",
     "Document",
     "DocumentChunk",
+    "DocumentNotFoundError",
     "DocumentPage",
     "InvalidStatusTransitionError",
     "ProcessingStatus",

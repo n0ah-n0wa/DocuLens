@@ -18,6 +18,7 @@ pytestmark = pytest.mark.integration
 
 EXPECTED_TABLES = {
     "users",
+    "refresh_tokens",
     "collections",
     "documents",
     "document_pages",

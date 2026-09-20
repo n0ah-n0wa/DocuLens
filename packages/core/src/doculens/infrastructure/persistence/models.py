@@ -105,6 +105,27 @@ class UserModel(Base):
     last_login_at: Mapped[datetime | None] = _optional_timestamp()
 
 
+class RefreshTokenModel(Base):
+    """One row per issued refresh token, keyed by the JWT ``jti``; a family is one login session."""
+
+    __tablename__ = "refresh_tokens"
+    __table_args__ = (
+        Index(None, "user_id"),
+        Index(None, "family_id"),
+        Index(None, "expires_at"),
+    )
+
+    id: Mapped[UUID] = _uuid_pk()
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
+    )
+    family_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = _optional_timestamp()
+    replaced_by_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+
+
 class CollectionModel(Base):
     __tablename__ = "collections"
     __table_args__ = (Index(None, "owner_id", "created_at"),)

@@ -51,6 +51,25 @@ def test_standard_library_records_use_the_same_pipeline(
     assert entry["service"] == "doculens-test"
 
 
+def test_standard_library_extra_fields_become_structured_fields(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Application-layer security events log through stdlib ``extra``; the fields must land in
+    the JSON entry rather than being dropped."""
+    configure_logging(
+        service="doculens-test", environment="local", level=LogLevel.INFO, log_format=LogFormat.JSON
+    )
+
+    logging.getLogger("doculens.application.auth").info(
+        "login failed", extra={"operation": "auth.login_failed", "reason": "wrong_password"}
+    )
+
+    (entry,) = _json_lines(capsys.readouterr().out)
+    assert entry["message"] == "login failed"
+    assert entry["operation"] == "auth.login_failed"
+    assert entry["reason"] == "wrong_password"
+
+
 def test_uvicorn_access_lines_are_suppressed_in_favour_of_the_middleware_entry(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -82,21 +101,52 @@ def test_records_below_the_configured_level_are_dropped(
     assert [entry["message"] for entry in entries] == ["shown"]
 
 
-def test_exceptions_are_rendered_as_structured_data(capsys: pytest.CaptureFixture[str]) -> None:
+def _fail_with_a_secret_in_scope() -> None:
+    secret_local = "hunter2-must-never-be-logged"  # noqa: S105 gitleaks:allow (test sentinel)
+    message = f"boom ({len(secret_local)} chars in scope)"
+    raise RuntimeError(message)
+
+
+def test_exceptions_are_rendered_as_structured_data_without_locals(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     configure_logging(
         service="doculens-test", environment="local", level=LogLevel.INFO, log_format=LogFormat.JSON
     )
 
-    message = "boom"
     try:
-        raise RuntimeError(message)  # noqa: TRY301 - the point is an exception with a traceback
+        _fail_with_a_secret_in_scope()
     except RuntimeError:
         structlog.get_logger("doculens.test").exception("failed")
 
     (entry,) = _json_lines(capsys.readouterr().out)
+    rendered = json.dumps(entry["exception"])
     assert entry["level"] == "error"
     assert isinstance(entry["exception"], list)
-    assert "RuntimeError" in json.dumps(entry["exception"])
+    assert "RuntimeError" in rendered
+    assert "_fail_with_a_secret_in_scope" in rendered
+    assert "hunter2" not in rendered
+    frames = [frame for exception in entry["exception"] for frame in exception["frames"]]
+    assert frames
+    assert all("locals" not in frame for frame in frames)
+
+
+def test_console_exceptions_do_not_print_locals(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging(
+        service="doculens-test",
+        environment="local",
+        level=LogLevel.INFO,
+        log_format=LogFormat.CONSOLE,
+    )
+
+    try:
+        _fail_with_a_secret_in_scope()
+    except RuntimeError:
+        structlog.get_logger("doculens.test").exception("failed")
+
+    output = capsys.readouterr().out
+    assert "RuntimeError" in output
+    assert "hunter2" not in output
 
 
 def test_console_format_renders_without_error(capsys: pytest.CaptureFixture[str]) -> None:

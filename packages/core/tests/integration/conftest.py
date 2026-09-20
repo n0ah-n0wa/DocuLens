@@ -1,43 +1,33 @@
 """Integration-test infrastructure: a real PostgreSQL, migrated with Alembic.
 
-Resolution order for the database: ``DOCULENS_TEST_DATABASE_URL`` (an existing server, e.g. the
-docker compose stack), otherwise a disposable PostgreSQL container via testcontainers. Without
-Docker the suite is skipped locally and fails in CI, so the gate is never silently green.
+Without Docker the suite is skipped locally and fails in CI, so the gate is never silently green.
 """
 
 import asyncio
 import os
 from collections.abc import AsyncIterator, Callable, Iterator
-from pathlib import Path
-
-# Containers are stopped explicitly below; the Ryuk reaper sidecar cannot map its port on some
-# Docker Desktop hosts (Windows reserved port ranges), so it is off unless the environment says so.
-os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from pydantic import SecretStr
 from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
-from testcontainers.postgres import PostgresContainer
 
 from doculens.infrastructure.config import CoreSettings
 from doculens.infrastructure.persistence.database import Database
 from doculens.infrastructure.persistence.models import Base
 from doculens.testing.factories import Factories
-
-POSTGRES_IMAGE = "postgres:17.11-alpine"
-ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
+from doculens.testing.postgres import (
+    DatabaseUnavailableError,
+    provisioned_database_url,
+    upgrade_to_head,
+)
+from doculens.testing.postgres import (
+    alembic_config as _alembic_config,
+)
 
 AlembicConfigFactory = Callable[[str], Config]
-
-
-def _alembic_config(database_url: str) -> Config:
-    config = Config(str(ALEMBIC_INI))
-    config.set_main_option("doculens.database_url", database_url)
-    return config
 
 
 @pytest.fixture(scope="session")
@@ -47,22 +37,13 @@ def alembic_config() -> AlembicConfigFactory:
 
 @pytest.fixture(scope="session")
 def database_url() -> Iterator[str]:
-    configured = os.environ.get("DOCULENS_TEST_DATABASE_URL")
-    if configured:
-        yield configured
-        return
-
-    container = PostgresContainer(POSTGRES_IMAGE, driver="asyncpg")
     try:
-        container.start()
-    except Exception as exc:
+        with provisioned_database_url() as url:
+            yield url
+    except DatabaseUnavailableError as exc:
         if os.environ.get("CI"):
             raise
-        pytest.skip(f"PostgreSQL container unavailable (is Docker running?): {exc}")
-    try:
-        yield container.get_connection_url()
-    finally:
-        container.stop()
+        pytest.skip(str(exc))
 
 
 @pytest.fixture(scope="session")
@@ -87,7 +68,7 @@ def migration_database_url(database_url: str) -> str:
 
 @pytest.fixture(scope="session")
 def migrated_database_url(database_url: str) -> str:
-    command.upgrade(_alembic_config(database_url), "head")
+    upgrade_to_head(database_url)
     return database_url
 
 

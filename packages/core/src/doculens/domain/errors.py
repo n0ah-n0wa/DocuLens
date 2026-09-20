@@ -44,3 +44,21 @@ class PermissionDeniedError(DomainError):
 
     code = "PERMISSION_DENIED"
     default_message = "You do not have permission to perform this action."
+
+
+class UnauthenticatedError(DomainError):
+    """The caller is not authenticated, or presented credentials that cannot be accepted."""
+
+    code = "UNAUTHENTICATED"
+    default_message = "Authentication is required."
+
+
+class RateLimitedError(DomainError):
+    """The caller exceeded a request budget; ``retry_after_seconds`` says when to try again."""
+
+    code = "RATE_LIMITED"
+    default_message = "Too many requests. Please try again later."
+
+    def __init__(self, retry_after_seconds: int, message: str | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = max(1, retry_after_seconds)
