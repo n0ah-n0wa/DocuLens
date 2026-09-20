@@ -64,8 +64,8 @@ Principles the specification fixes (§1, §4, §90):
 The layout adapts §71 as recorded in [ADR-001](decisions/ADR-001-backend-architecture.md): the
 framework-free core is its own package so that packaging itself enforces the §72 boundary.
 
-**Planned** components not yet present: the Alembic migration set (§45), the RAG evaluation
-harness under `evals/` (§62), the CD workflow (§60) and the Terraform modules (§57).
+**Planned** components not yet present: the RAG evaluation harness under `evals/` (§62), the CD
+workflow (§60) and the Terraform modules (§57).
 
 ---
 
@@ -359,8 +359,17 @@ sequenceDiagram
 
 ## 9. Persistence
 
-**Implemented:** local PostgreSQL 17, Redis 7.4 and ChromaDB 1.5 via docker compose; no schema or
-adapters yet.
+**Implemented:** the relational schema for every §7 entity as SQLAlchemy 2 models with
+application-generated UUID v4 keys, timezone-aware timestamps, foreign keys with explicit deletion
+rules, the §45 indexes, unique and check constraints, and enumerations stored as constrained
+varchar columns; the initial Alembic migration (`packages/core/alembic`), which CI verifies against
+the models; domain entities as frozen dataclasses with the §7.3 state machine; repository and
+unit-of-work ports in `application` implemented by SQLAlchemy adapters in `infrastructure`, where
+every read of a user-owned resource requires the owner's ID and no ORM relationships exist (no lazy
+loading, no ORM-side cascades); a per-process `Database` (engine,
+sessions, readiness probe) created by the composition roots and disposed at shutdown; and
+integration tests that run against a real PostgreSQL. Local PostgreSQL 17, Redis 7.4 and ChromaDB
+1.5 run via docker compose.
 
 **Planned** (§7, §45–§47):
 
@@ -645,16 +654,16 @@ Trust boundaries fixed by the specification (§22, §53, §68):
 
 ## 16. Status summary
 
-| Area                      | Implemented                                                                                                | Planned                                         | Pending decisions                             |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------- |
-| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots | ports, adapters                                 | —                                             |
-| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                  | text rendering, versioned routes                | OQ-3, OQ-3b, OQ-10, OQ-19                     |
-| Ingestion                 | —                                                                                                          | §10–§16 pipeline, staleness metadata            | OQ-3, OQ-5, OQ-6, OQ-7, OQ-14                 |
-| RAG                       | —                                                                                                          | §17–§27 components, quotas, usage ledger        | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
-| Async processing          | worker deployable                                                                                          | queue, guarded transitions, retries, DLQ        | OQ-2, OQ-27 (ADR-011)                         |
-| Persistence               | local services                                                                                             | §7 schema + derived records, consistency model  | OQ-7, OQ-8, OQ-13, OQ-18, OQ-28 (ADR-012)     |
-| Authentication            | —                                                                                                          | §8 with durable refresh tokens                  | OQ-12, OQ-19, OQ-24                           |
-| Authorization             | —                                                                                                          | §9, §16, store-level scoping                    | —                                             |
-| AWS                       | Terraform roots                                                                                            | §57 modules, VPC egress, OIDC                   | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28  |
-| CI/CD                     | CI pipeline                                                                                                | integration job, CD pipeline                    | —                                             |
-| Observability             | structured JSON logs, request correlation, access log                                                      | metrics, tracing, queue correlation, DLQ alarms | OQ-21                                         |
+| Area                      | Implemented                                                                                                | Planned                                               | Pending decisions                             |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------- |
+| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots | ports, adapters                                       | —                                             |
+| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                  | text rendering, versioned routes                      | OQ-3, OQ-3b, OQ-10, OQ-19                     |
+| Ingestion                 | —                                                                                                          | §10–§16 pipeline, staleness metadata                  | OQ-3, OQ-5, OQ-6, OQ-7, OQ-14                 |
+| RAG                       | —                                                                                                          | §17–§27 components, quotas, usage ledger              | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
+| Async processing          | worker deployable                                                                                          | queue, guarded transitions, retries, DLQ              | OQ-2, OQ-27 (ADR-011)                         |
+| Persistence               | §7 schema, Alembic migration, repositories, unit of work, DB probe                                         | usage ledger, refresh-token record, consistency model | OQ-7, OQ-8, OQ-13, OQ-18, OQ-28 (ADR-012)     |
+| Authentication            | —                                                                                                          | §8 with durable refresh tokens                        | OQ-12, OQ-19, OQ-24                           |
+| Authorization             | —                                                                                                          | §9, §16, store-level scoping                          | —                                             |
+| AWS                       | Terraform roots                                                                                            | §57 modules, VPC egress, OIDC                         | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28  |
+| CI/CD                     | CI pipeline                                                                                                | integration job, CD pipeline                          | —                                             |
+| Observability             | structured JSON logs, request correlation, access log                                                      | metrics, tracing, queue correlation, DLQ alarms       | OQ-21                                         |

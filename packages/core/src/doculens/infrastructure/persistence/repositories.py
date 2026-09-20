@@ -1,0 +1,283 @@
+"""SQLAlchemy implementations of the repository ports.
+
+Each repository is bound to the session of one unit of work. Reads of user-owned resources always
+filter by ``owner_id`` (§9). ``update`` methods load the row and copy the entity's fields onto it,
+so callers only ever handle domain entities.
+"""
+
+from collections.abc import Sequence
+from uuid import UUID
+
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from doculens.domain.collections import Collection
+from doculens.domain.conversations import Citation, Conversation, Message
+from doculens.domain.documents import Document, DocumentChunk, DocumentPage
+from doculens.domain.errors import NotFoundError
+from doculens.domain.users import User
+from doculens.infrastructure.persistence import mappers
+from doculens.infrastructure.persistence.models import (
+    CitationModel,
+    CollectionModel,
+    ConversationModel,
+    DocumentChunkModel,
+    DocumentModel,
+    DocumentPageModel,
+    MessageModel,
+    UserModel,
+)
+
+
+class SqlAlchemyUserRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, user: User) -> None:
+        self._session.add(mappers.user_to_row(user))
+        await self._session.flush()
+
+    async def get(self, user_id: UUID) -> User | None:
+        row = await self._session.get(UserModel, user_id)
+        return mappers.user_to_domain(row) if row is not None else None
+
+    async def get_by_email(self, email: str) -> User | None:
+        rows = await self._session.scalars(select(UserModel).where(UserModel.email == email))
+        row = rows.first()
+        return mappers.user_to_domain(row) if row is not None else None
+
+    async def update(self, user: User) -> None:
+        row = await self._session.get(UserModel, user.id)
+        if row is None:
+            raise NotFoundError
+        mappers.apply_user(row, user)
+        await self._session.flush()
+
+
+class SqlAlchemyCollectionRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, collection: Collection) -> None:
+        self._session.add(mappers.collection_to_row(collection))
+        await self._session.flush()
+
+    async def get(self, owner_id: UUID, collection_id: UUID) -> Collection | None:
+        row = await self._owned(owner_id, collection_id)
+        return mappers.collection_to_domain(row) if row is not None else None
+
+    async def list_for_owner(self, owner_id: UUID) -> list[Collection]:
+        rows = await self._session.scalars(
+            select(CollectionModel)
+            .where(CollectionModel.owner_id == owner_id)
+            .order_by(CollectionModel.created_at, CollectionModel.id)
+        )
+        return [mappers.collection_to_domain(row) for row in rows]
+
+    async def update(self, collection: Collection) -> None:
+        row = await self._owned(collection.owner_id, collection.id)
+        if row is None:
+            raise NotFoundError
+        mappers.apply_collection(row, collection)
+        await self._session.flush()
+
+    async def delete(self, owner_id: UUID, collection_id: UUID) -> bool:
+        row = await self._owned(owner_id, collection_id)
+        if row is None:
+            return False
+        await self._session.delete(row)
+        await self._session.flush()
+        return True
+
+    async def _owned(self, owner_id: UUID, collection_id: UUID) -> CollectionModel | None:
+        rows = await self._session.scalars(
+            select(CollectionModel).where(
+                CollectionModel.id == collection_id, CollectionModel.owner_id == owner_id
+            )
+        )
+        return rows.first()
+
+
+class SqlAlchemyDocumentRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, document: Document) -> None:
+        self._session.add(mappers.document_to_row(document))
+        await self._session.flush()
+
+    async def get(self, owner_id: UUID, document_id: UUID) -> Document | None:
+        row = await self._owned(owner_id, document_id)
+        return mappers.document_to_domain(row) if row is not None else None
+
+    async def list_for_owner(self, owner_id: UUID) -> list[Document]:
+        rows = await self._session.scalars(
+            select(DocumentModel)
+            .where(DocumentModel.owner_id == owner_id)
+            .order_by(DocumentModel.created_at, DocumentModel.id)
+        )
+        return [mappers.document_to_domain(row) for row in rows]
+
+    async def list_in_collection(self, owner_id: UUID, collection_id: UUID) -> list[Document]:
+        rows = await self._session.scalars(
+            select(DocumentModel)
+            .where(DocumentModel.owner_id == owner_id, DocumentModel.collection_id == collection_id)
+            .order_by(DocumentModel.created_at, DocumentModel.id)
+        )
+        return [mappers.document_to_domain(row) for row in rows]
+
+    async def count_for_owner(self, owner_id: UUID) -> int:
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(DocumentModel)
+            .where(DocumentModel.owner_id == owner_id)
+        )
+        return int(count or 0)
+
+    async def update(self, document: Document) -> None:
+        row = await self._owned(document.owner_id, document.id)
+        if row is None:
+            raise NotFoundError
+        mappers.apply_document(row, document)
+        await self._session.flush()
+
+    async def _owned(self, owner_id: UUID, document_id: UUID) -> DocumentModel | None:
+        rows = await self._session.scalars(
+            select(DocumentModel).where(
+                DocumentModel.id == document_id, DocumentModel.owner_id == owner_id
+            )
+        )
+        return rows.first()
+
+
+class SqlAlchemyDocumentContentRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add_pages(self, pages: Sequence[DocumentPage]) -> None:
+        self._session.add_all([mappers.page_to_row(page) for page in pages])
+        await self._session.flush()
+
+    async def add_chunks(self, chunks: Sequence[DocumentChunk]) -> None:
+        self._session.add_all([mappers.chunk_to_row(chunk) for chunk in chunks])
+        await self._session.flush()
+
+    async def list_pages(self, owner_id: UUID, document_id: UUID) -> list[DocumentPage]:
+        rows = await self._session.scalars(
+            select(DocumentPageModel)
+            .join(DocumentModel, DocumentModel.id == DocumentPageModel.document_id)
+            .where(DocumentModel.owner_id == owner_id, DocumentModel.id == document_id)
+            .order_by(DocumentPageModel.page_number)
+        )
+        return [mappers.page_to_domain(row) for row in rows]
+
+    async def list_chunks(self, owner_id: UUID, document_id: UUID) -> list[DocumentChunk]:
+        rows = await self._session.scalars(
+            select(DocumentChunkModel)
+            .join(DocumentModel, DocumentModel.id == DocumentChunkModel.document_id)
+            .where(DocumentModel.owner_id == owner_id, DocumentModel.id == document_id)
+            .order_by(DocumentChunkModel.chunk_index)
+        )
+        return [mappers.chunk_to_domain(row) for row in rows]
+
+    async def delete_content(self, document_id: UUID) -> None:
+        await self._session.execute(
+            delete(DocumentChunkModel).where(DocumentChunkModel.document_id == document_id)
+        )
+        await self._session.execute(
+            delete(DocumentPageModel).where(DocumentPageModel.document_id == document_id)
+        )
+        await self._session.flush()
+
+
+class SqlAlchemyConversationRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, conversation: Conversation) -> None:
+        self._session.add(mappers.conversation_to_row(conversation))
+        await self._session.flush()
+
+    async def get(self, owner_id: UUID, conversation_id: UUID) -> Conversation | None:
+        row = await self._owned(owner_id, conversation_id)
+        return mappers.conversation_to_domain(row) if row is not None else None
+
+    async def list_for_owner(self, owner_id: UUID) -> list[Conversation]:
+        rows = await self._session.scalars(
+            select(ConversationModel)
+            .where(ConversationModel.owner_id == owner_id)
+            .order_by(ConversationModel.updated_at.desc(), ConversationModel.id)
+        )
+        return [mappers.conversation_to_domain(row) for row in rows]
+
+    async def update(self, conversation: Conversation) -> None:
+        row = await self._owned(conversation.owner_id, conversation.id)
+        if row is None:
+            raise NotFoundError
+        mappers.apply_conversation(row, conversation)
+        await self._session.flush()
+
+    async def delete(self, owner_id: UUID, conversation_id: UUID) -> bool:
+        row = await self._owned(owner_id, conversation_id)
+        if row is None:
+            return False
+        await self._session.delete(row)
+        await self._session.flush()
+        return True
+
+    async def _owned(self, owner_id: UUID, conversation_id: UUID) -> ConversationModel | None:
+        rows = await self._session.scalars(
+            select(ConversationModel).where(
+                ConversationModel.id == conversation_id, ConversationModel.owner_id == owner_id
+            )
+        )
+        return rows.first()
+
+
+class SqlAlchemyMessageRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(
+        self, owner_id: UUID, message: Message, citations: Sequence[Citation] = ()
+    ) -> None:
+        if not await self._owns_conversation(owner_id, message.conversation_id):
+            raise NotFoundError
+        # Citations reference the message by foreign key but not by ORM relationship, so the
+        # message row must be flushed before the citation rows are inserted.
+        self._session.add(mappers.message_to_row(message))
+        await self._session.flush()
+        self._session.add_all([mappers.citation_to_row(citation) for citation in citations])
+        await self._session.flush()
+
+    async def list_for_conversation(self, owner_id: UUID, conversation_id: UUID) -> list[Message]:
+        rows = await self._session.scalars(
+            select(MessageModel)
+            .join(ConversationModel, ConversationModel.id == MessageModel.conversation_id)
+            .where(ConversationModel.owner_id == owner_id, ConversationModel.id == conversation_id)
+            .order_by(MessageModel.created_at, MessageModel.id)
+        )
+        return [mappers.message_to_domain(row) for row in rows]
+
+    async def list_citations_for_conversation(
+        self, owner_id: UUID, conversation_id: UUID
+    ) -> dict[UUID, list[Citation]]:
+        rows = await self._session.scalars(
+            select(CitationModel)
+            .join(MessageModel, MessageModel.id == CitationModel.message_id)
+            .join(ConversationModel, ConversationModel.id == MessageModel.conversation_id)
+            .where(ConversationModel.owner_id == owner_id, ConversationModel.id == conversation_id)
+            .order_by(CitationModel.message_id, CitationModel.citation_order)
+        )
+        grouped: dict[UUID, list[Citation]] = {}
+        for row in rows:
+            grouped.setdefault(row.message_id, []).append(mappers.citation_to_domain(row))
+        return grouped
+
+    async def _owns_conversation(self, owner_id: UUID, conversation_id: UUID) -> bool:
+        rows = await self._session.scalars(
+            select(ConversationModel.id).where(
+                ConversationModel.id == conversation_id, ConversationModel.owner_id == owner_id
+            )
+        )
+        return rows.first() is not None

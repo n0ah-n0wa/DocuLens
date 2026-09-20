@@ -12,12 +12,14 @@ from typing import Annotated, cast
 from fastapi import Depends, Request
 
 from doculens.application.health import ReadinessService
+from doculens.infrastructure.persistence.database import Database
 from doculens_api.settings import ApiSettings
 
 
 @dataclass(frozen=True, slots=True)
 class AppComponents:
     settings: ApiSettings
+    database: Database
     readiness: ReadinessService
 
 

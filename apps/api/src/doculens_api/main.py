@@ -3,8 +3,8 @@
 ``create_app`` loads and validates settings, configures logging, assembles the application
 components, and wires middleware, error handlers and routers. It holds no module-level state, so
 every call produces an independent application; uvicorn starts it with
-``uvicorn doculens_api.main:create_app --factory``. Resources that need opening and closing
-(connection pools, clients) are acquired in ``lifespan`` once adapters exist.
+``uvicorn doculens_api.main:create_app --factory``. The database engine is created here (no
+connection is opened until first use) and disposed of when the application shuts down.
 """
 
 from collections.abc import AsyncIterator, Sequence
@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from doculens.application.health import HealthProbe, ReadinessService
 from doculens.infrastructure.config import load_settings
 from doculens.infrastructure.logging import configure_logging
+from doculens.infrastructure.persistence.database import Database, DatabaseProbe
 from doculens_api import SERVICE_NAME, __version__
 from doculens_api.dependencies import AppComponents
 from doculens_api.errors import DEFAULT_ERROR_RESPONSES, register_error_handlers
@@ -32,12 +33,13 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 
 def create_app(
-    settings: ApiSettings | None = None, *, probes: Sequence[HealthProbe] = ()
+    settings: ApiSettings | None = None, *, probes: Sequence[HealthProbe] | None = None
 ) -> FastAPI:
     """Build a fully wired application instance.
 
-    ``settings`` defaults to the validated environment configuration; ``probes`` are the dependency
-    checks exposed by ``/health/ready``. Both are injectable so tests can run isolated instances.
+    ``settings`` defaults to the validated environment configuration. ``probes`` are the dependency
+    checks exposed by ``/health/ready``; ``None`` means the real dependencies (the database), while
+    tests pass an explicit list of fakes.
     """
     resolved = settings if settings is not None else load_settings(ApiSettings)
     configure_logging(
@@ -46,9 +48,14 @@ def create_app(
         level=resolved.log_level,
         log_format=resolved.log_format,
     )
+    database = Database(resolved)
+    readiness_probes = probes if probes is not None else [DatabaseProbe(database)]
     components = AppComponents(
         settings=resolved,
-        readiness=ReadinessService(probes, timeout_seconds=resolved.health_probe_timeout_seconds),
+        database=database,
+        readiness=ReadinessService(
+            readiness_probes, timeout_seconds=resolved.health_probe_timeout_seconds
+        ),
     )
 
     @asynccontextmanager
@@ -63,6 +70,7 @@ def create_app(
         try:
             yield
         finally:
+            await database.dispose()
             logger.info("application stopped", operation="app.stop")
 
     app = FastAPI(

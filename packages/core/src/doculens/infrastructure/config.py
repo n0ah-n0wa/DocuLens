@@ -11,8 +11,10 @@ Interface packages extend :class:`CoreSettings` with the fields they own.
 from enum import StrEnum
 from typing import Self
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DATABASE_URL_SCHEME = "postgresql+asyncpg"
 
 
 class Environment(StrEnum):
@@ -59,6 +61,26 @@ class CoreSettings(BaseSettings):
         description="json for machine-readable logs; console is for local development only.",
     )
 
+    database_url: SecretStr = Field(
+        description="SQLAlchemy URL for PostgreSQL, e.g. postgresql+asyncpg://user:pass@host/db."
+    )
+    database_pool_size: int = Field(default=5, ge=1, le=100)
+    database_max_overflow: int = Field(default=5, ge=0, le=100)
+    database_pool_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    database_pool_recycle_seconds: int = Field(
+        default=1800, ge=60, description="Recycle idle connections before proxies drop them."
+    )
+    database_echo: bool = Field(default=False, description="Log every SQL statement (local only).")
+
+    @field_validator("database_url")
+    @classmethod
+    def _require_async_postgres_url(cls, value: SecretStr) -> SecretStr:
+        scheme = value.get_secret_value().split("://", 1)[0]
+        if scheme != DATABASE_URL_SCHEME:
+            message = f"DATABASE_URL must start with {DATABASE_URL_SCHEME}://"
+            raise ValueError(message)
+        return value
+
     @property
     def is_deployed(self) -> bool:
         """True for staging and production, where local-development conveniences are forbidden."""
@@ -71,6 +93,8 @@ class CoreSettings(BaseSettings):
         problems: list[str] = []
         if self.log_format is not LogFormat.JSON:
             problems.append("LOG_FORMAT must be json (structured logging is required, §50)")
+        if self.database_echo:
+            problems.append("DATABASE_ECHO must be false (statement logging can expose data, §68)")
         if problems:
             message = f"unsafe configuration for APP_ENV={self.app_env}: " + "; ".join(problems)
             raise ValueError(message)

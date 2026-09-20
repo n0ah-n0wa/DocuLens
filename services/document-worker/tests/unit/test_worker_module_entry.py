@@ -19,7 +19,12 @@ def test_module_entrypoint_runs_and_exits_zero() -> None:
         text=True,
         timeout=30,
         check=False,
-        env={**os.environ, "APP_ENV": "local", "LOG_FORMAT": "json"},
+        env={
+            **os.environ,
+            "APP_ENV": "local",
+            "LOG_FORMAT": "json",
+            "DATABASE_URL": "postgresql+asyncpg://u:p@127.0.0.1:1/doculens",
+        },
     )
 
     assert completed.returncode == 0, completed.stderr

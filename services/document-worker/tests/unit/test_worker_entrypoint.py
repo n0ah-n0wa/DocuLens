@@ -13,6 +13,7 @@ def test_main_exits_cleanly_and_logs_a_structured_start_event(
 ) -> None:
     monkeypatch.setenv("LOG_FORMAT", "json")
     monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@127.0.0.1:1/doculens")
 
     exit_code = main()
 
@@ -29,6 +30,7 @@ def test_invalid_configuration_fails_the_process_with_a_clear_message(
 ) -> None:
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("LOG_FORMAT", "console")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@127.0.0.1:1/doculens")
 
     exit_code = main()
 

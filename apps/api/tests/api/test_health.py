@@ -43,6 +43,17 @@ def test_readiness_is_ready_when_every_probe_passes(settings: ApiSettings) -> No
     }
 
 
+def test_readiness_checks_the_real_database_by_default(settings: ApiSettings) -> None:
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/health/ready")
+
+    assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
+    (check,) = response.json()["checks"]
+    assert check["name"] == "postgres"
+    assert check["status"] == "fail"
+    assert check["detail"] in {"failed", "timed out"}
+
+
 def test_readiness_answers_503_while_a_dependency_fails(settings: ApiSettings) -> None:
     with TestClient(create_app(settings, probes=[HealthyProbe(), FailingProbe()])) as client:
         response = client.get("/health/ready")

@@ -5,7 +5,7 @@
 COMPOSE := docker compose --project-directory . -f docker/compose.yaml
 
 .PHONY: help bootstrap format format-check lint typecheck test test-e2e build docs-check check \
-        docker-build infra-up infra-down infra-logs clean
+        db-upgrade db-downgrade db-revision docker-build infra-up infra-down infra-logs clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -37,6 +37,15 @@ test: ## Run Python tests
 
 test-e2e: ## Run Playwright end-to-end tests (requires `make build` first)
 	pnpm run test:e2e
+
+db-upgrade: ## Apply all Alembic migrations to DATABASE_URL (from .env)
+	uv run alembic -c packages/core/alembic.ini upgrade head
+
+db-downgrade: ## Roll back the most recent Alembic migration
+	uv run alembic -c packages/core/alembic.ini downgrade -1
+
+db-revision: ## Autogenerate a migration from the ORM models: make db-revision m="add widgets"
+	uv run alembic -c packages/core/alembic.ini revision --autogenerate -m "$(m)"
 
 docs-check: ## Verify formatting and relative links of all Markdown documentation
 	pnpm run format:check

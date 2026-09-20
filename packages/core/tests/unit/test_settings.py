@@ -1,5 +1,5 @@
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from doculens.infrastructure.config import (
     ConfigurationError,
@@ -12,9 +12,16 @@ from doculens.infrastructure.config import (
 
 pytestmark = pytest.mark.unit
 
+DB_URL = SecretStr("postgresql+asyncpg://u:p@127.0.0.1:1/doculens")
+
+
+@pytest.fixture(autouse=True)
+def _database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", DB_URL.get_secret_value())
+
 
 def test_defaults_are_safe_for_local_development() -> None:
-    settings = CoreSettings(_env_file=None)
+    settings = CoreSettings(_env_file=None, database_url=DB_URL)
 
     assert settings.app_env is Environment.LOCAL
     assert settings.log_level is LogLevel.INFO
@@ -35,7 +42,9 @@ def test_values_are_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_local_environment_may_use_console_logs() -> None:
-    settings = CoreSettings(_env_file=None, app_env=Environment.LOCAL, log_format=LogFormat.CONSOLE)
+    settings = CoreSettings(
+        _env_file=None, database_url=DB_URL, app_env=Environment.LOCAL, log_format=LogFormat.CONSOLE
+    )
 
     assert settings.log_format is LogFormat.CONSOLE
 
@@ -43,7 +52,9 @@ def test_local_environment_may_use_console_logs() -> None:
 @pytest.mark.parametrize("environment", [Environment.STAGING, Environment.PRODUCTION])
 def test_deployed_environments_reject_console_logs(environment: Environment) -> None:
     with pytest.raises(ValidationError, match="LOG_FORMAT must be json"):
-        CoreSettings(_env_file=None, app_env=environment, log_format=LogFormat.CONSOLE)
+        CoreSettings(
+            _env_file=None, database_url=DB_URL, app_env=environment, log_format=LogFormat.CONSOLE
+        )
 
 
 def test_unknown_environment_value_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -61,8 +72,15 @@ def test_unsafe_deployed_configuration_fails_loading(monkeypatch: pytest.MonkeyP
         load_settings(CoreSettings, env_file=None)
 
 
+def test_deployed_environments_reject_sql_statement_logging() -> None:
+    with pytest.raises(ValidationError, match="DATABASE_ECHO must be false"):
+        CoreSettings(
+            _env_file=None, database_url=DB_URL, app_env=Environment.STAGING, database_echo=True
+        )
+
+
 def test_settings_are_immutable() -> None:
-    settings = CoreSettings(_env_file=None)
+    settings = CoreSettings(_env_file=None, database_url=DB_URL)
 
     with pytest.raises(ValidationError):
         settings.log_level = LogLevel.DEBUG  # type: ignore[misc]  # frozen model is the point

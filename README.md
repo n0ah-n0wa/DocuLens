@@ -111,11 +111,11 @@ locally and in AWS Secrets Manager in deployed environments (SPECIFICATIONS.md �
 
 ## Testing
 
-| Layer                                    | Location                                     | Command                       |
-| ---------------------------------------- | -------------------------------------------- | ----------------------------- |
-| Python unit / API                        | `*/tests/`                                   | `uv run pytest`               |
-| Architecture rules                       | `packages/core/tests/unit`                   | part of `uv run pytest`       |
-| Web end-to-end                           | `apps/web/e2e`                               | `pnpm build && pnpm test:e2e` |
+| Layer                                    | Location                                     | Command                                         |
+| ---------------------------------------- | -------------------------------------------- | ----------------------------------------------- |
+| Python unit / API / integration          | `*/tests/`                                   | `uv run pytest` (integration tests need Docker) |
+| Architecture rules                       | `packages/core/tests/unit`                   | part of `uv run pytest`                         |
+| Web end-to-end                           | `apps/web/e2e`                               | `pnpm build && pnpm test:e2e`                   |
 | Integration, RAG evaluation, adversarial | added with the features they cover (§61–§64) |
 
 ## Deployment

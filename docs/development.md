@@ -51,6 +51,27 @@ make docker-build                                             # production image
 Environments (§87): `local` is the docker compose stack; `staging` and `production` are Terraform
 roots (see `infrastructure/terraform/README.md`). Local development never requires AWS.
 
+### Database and migrations
+
+The schema is owned by the ORM models in `packages/core/src/doculens/infrastructure/persistence/models.py`
+and changed only through Alembic (§45):
+
+```bash
+make db-upgrade                       # apply migrations to DATABASE_URL from .env
+make db-revision m="add usage ledger" # autogenerate a migration after changing the models; review it
+make db-downgrade                     # roll back one revision
+```
+
+CI proves that the migration chain and the models describe the same schema, so an un-migrated
+model change fails the build. If port 5432 is unavailable on your machine, set `POSTGRES_PORT`
+(and the port inside `DATABASE_URL`) in `.env`.
+
+Integration tests (`packages/core/tests/integration`, marker `integration`) start a disposable
+PostgreSQL container through testcontainers; set `DOCULENS_TEST_DATABASE_URL` to reuse a running
+server instead. **The tests truncate every table of that database and create a second database
+next to it for migration tests, so never point it at data you want to keep.** Without Docker they
+are skipped locally and fail in CI.
+
 ## 3. Workspace layout
 
 Python is one uv workspace (`pyproject.toml` at the root, one `uv.lock`, one `.venv`):
