@@ -33,9 +33,11 @@ from doculens.domain.storage import (
     document_object_key,
 )
 from doculens.infrastructure.storage import FilesystemObjectStorage
+from doculens.testing.embeddings import FakeEmbeddingProvider
 from doculens.testing.factories import Factories
 from doculens.testing.fakes import InMemoryStore, InMemoryUnitOfWork
 from doculens.testing.pdfs import pdf_with_pages
+from doculens.testing.vectors import InMemoryVectorStore
 
 pytestmark = pytest.mark.unit
 
@@ -91,6 +93,8 @@ class World:
     store: InMemoryStore
     storage: FlakyStorage
     extractor: FakeExtractor
+    embeddings: FakeEmbeddingProvider
+    vectors: InMemoryVectorStore
     processor: DocumentProcessor
     owner_id: UUID
     unit_of_work: Callable[[], InMemoryUnitOfWork]
@@ -128,6 +132,8 @@ def world(tmp_path: Path) -> World:
     store.users[owner.id] = owner
     storage = FlakyStorage(tmp_path / "objects")
     extractor = FakeExtractor()
+    embeddings = FakeEmbeddingProvider(dimensions=4)
+    vectors = InMemoryVectorStore()
 
     def unit_of_work() -> InMemoryUnitOfWork:
         return InMemoryUnitOfWork(store)
@@ -137,9 +143,11 @@ def world(tmp_path: Path) -> World:
         storage=storage,
         extractor=extractor,
         chunker=CHUNKER,
+        embeddings=embeddings,
+        vectors=vectors,
         limits=LIMITS,
     )
-    return World(store, storage, extractor, processor, owner.id, unit_of_work)
+    return World(store, storage, extractor, embeddings, vectors, processor, owner.id, unit_of_work)
 
 
 @pytest.fixture
@@ -157,11 +165,18 @@ async def test_an_uploaded_document_is_validated_extracted_and_parked_for_chunki
     assert report == ProcessingReport(
         document.id,
         ProcessingOutcome.PROCESSED,
-        ProcessingStatus.EMBEDDING,
-        (ProcessingStatus.VALIDATING, ProcessingStatus.EXTRACTING, ProcessingStatus.CHUNKING),
+        ProcessingStatus.READY,
+        (
+            ProcessingStatus.VALIDATING,
+            ProcessingStatus.EXTRACTING,
+            ProcessingStatus.CHUNKING,
+            ProcessingStatus.EMBEDDING,
+            ProcessingStatus.INDEXING,
+        ),
     )
     stored = world.document(document.id)
-    assert stored.processing_status is ProcessingStatus.EMBEDDING
+    assert stored.processing_status is ProcessingStatus.READY
+    assert stored.indexed_at is not None
     assert stored.chunk_count == 1
     chunks = world.chunks(document.id)
     assert [c.text for c in chunks] == ["Revenue grew."]
@@ -218,8 +233,13 @@ async def test_a_run_resumes_from_the_current_stage_and_replaces_partial_pages(
 
     report = await world.processor.process(document.id)
 
-    assert report.stages == (ProcessingStatus.EXTRACTING, ProcessingStatus.CHUNKING)
-    assert report.status is ProcessingStatus.EMBEDDING
+    assert report.stages == (
+        ProcessingStatus.EXTRACTING,
+        ProcessingStatus.CHUNKING,
+        ProcessingStatus.EMBEDDING,
+        ProcessingStatus.INDEXING,
+    )
+    assert report.status is ProcessingStatus.READY
     pages = world.pages(document.id)
     assert [p.page_number for p in pages] == [1, 2]
     assert stale.id not in {p.id for p in pages}
@@ -237,8 +257,10 @@ async def test_a_run_resumes_validation_after_a_crash_in_that_stage(
         ProcessingStatus.VALIDATING,
         ProcessingStatus.EXTRACTING,
         ProcessingStatus.CHUNKING,
+        ProcessingStatus.EMBEDDING,
+        ProcessingStatus.INDEXING,
     )
-    assert report.status is ProcessingStatus.EMBEDDING
+    assert report.status is ProcessingStatus.READY
 
 
 async def test_a_rejected_file_fails_at_validation_with_a_safe_message(
@@ -312,7 +334,7 @@ async def test_an_unreachable_store_leaves_the_document_retryable(
 
     world.storage.unavailable = False
     report = await world.processor.process(document.id)
-    assert report.status is ProcessingStatus.EMBEDDING
+    assert report.status is ProcessingStatus.READY
 
 
 async def test_a_stored_file_that_no_longer_matches_the_row_is_refused(
@@ -364,6 +386,8 @@ async def test_a_document_moved_by_another_worker_is_left_alone(
         storage=world.storage,
         extractor=world.extractor,
         chunker=CHUNKER,
+        embeddings=world.embeddings,
+        vectors=world.vectors,
         limits=LIMITS,
     )
 
@@ -395,7 +419,7 @@ async def test_a_failed_document_is_not_retried_until_explicitly_reprocessed(
 
     assert report.outcome is ProcessingOutcome.PROCESSED
     stored = world.document(document.id)
-    assert stored.processing_status is ProcessingStatus.EMBEDDING
+    assert stored.processing_status is ProcessingStatus.READY
     assert stored.processing_error is None
 
 
@@ -412,8 +436,12 @@ async def test_a_run_resuming_at_chunking_replaces_chunks_without_duplicates(
 
     report = await world.processor.process(document.id)
 
-    assert report.stages == (ProcessingStatus.CHUNKING,)
-    assert report.status is ProcessingStatus.EMBEDDING
+    assert report.stages == (
+        ProcessingStatus.CHUNKING,
+        ProcessingStatus.EMBEDDING,
+        ProcessingStatus.INDEXING,
+    )
+    assert report.status is ProcessingStatus.READY
     assert [c.id for c in world.chunks(document.id)] == first_ids
 
 
@@ -426,9 +454,10 @@ async def test_a_document_without_text_still_reaches_embedding_with_zero_chunks(
 
     report = await world.processor.process(document.id)
 
-    assert report.status is ProcessingStatus.EMBEDDING
+    assert report.status is ProcessingStatus.READY
     assert world.document(document.id).chunk_count == 0
     assert world.chunks(document.id) == []
+    assert await world.vectors.count(world.owner_id, document.id) == 0
 
 
 async def test_a_database_outage_leaves_the_document_retryable(world: World, sample: bytes) -> None:
@@ -452,6 +481,8 @@ async def test_a_database_outage_leaves_the_document_retryable(world: World, sam
         storage=world.storage,
         extractor=world.extractor,
         chunker=CHUNKER,
+        embeddings=world.embeddings,
+        vectors=world.vectors,
         limits=LIMITS,
     )
 

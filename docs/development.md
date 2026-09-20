@@ -76,8 +76,10 @@ so nothing beyond a checkout is needed. To exercise the S3 adapter locally, star
 and set `STORAGE_BACKEND=s3` with the MinIO values from `.env.example` (`make infra-up` creates the
 bucket). Staging and production accept only `s3` with server-side encryption and role credentials.
 
-Integration tests (`packages/core/tests/integration`, marker `integration`) start a disposable
-PostgreSQL container through testcontainers; set `DOCULENS_TEST_DATABASE_URL` to reuse a running
+Integration tests (`packages/core/tests/integration`, marker `integration`) start disposable
+PostgreSQL, MinIO and ChromaDB containers through testcontainers; set `DOCULENS_TEST_DATABASE_URL`,
+`DOCULENS_TEST_S3_ENDPOINT_URL` or `DOCULENS_TEST_CHROMA_URL` to reuse running ones (the compose
+stack, for example). Set `DOCULENS_TEST_DATABASE_URL` to reuse a running
 server instead. **The tests truncate every table of that database and create a second database
 next to it for migration tests, so never point it at data you want to keep.** Without Docker they
 are skipped locally and fail in CI.

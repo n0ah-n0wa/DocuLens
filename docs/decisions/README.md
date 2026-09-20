@@ -26,23 +26,23 @@ that later readers understand why the system looks the way it does.
 
 ## Index
 
-| ADR                                               | Title                                          | Status   | Blocked by                         |
-| ------------------------------------------------- | ---------------------------------------------- | -------- | ---------------------------------- |
-| [ADR-001](ADR-001-backend-architecture.md)        | Backend architecture                           | Accepted | —                                  |
-| ADR-002                                           | Vector database selection                      | Pending  | OQ-1                               |
-| [ADR-003](ADR-003-chunking-strategy.md)           | Chunking strategy                              | Accepted | OQ-16 provisional                  |
-| ADR-004                                           | Embedding provider                             | Pending  | OQ-17                              |
-| ADR-005                                           | LLM provider                                   | Pending  | OQ-17                              |
-| ADR-006                                           | Async processing architecture                  | Pending  | OQ-2                               |
-| [ADR-007](ADR-007-authentication-strategy.md)     | Authentication strategy                        | Accepted | OQ-19 (token storage) still open   |
-| ADR-008                                           | AWS deployment architecture                    | Pending  | OQ-1, OQ-3, OQ-3b, OQ-19, OQ-23    |
-| ADR-009                                           | RAG evaluation strategy                        | Pending  | OQ-22                              |
-| [ADR-010](ADR-010-repository-tooling.md)          | Repository tooling                             | Accepted | —                                  |
-| [ADR-011](ADR-011-job-enqueue-consistency.md)     | Document row / job enqueue consistency         | Proposed | OQ-27 (decision requested)         |
-| [ADR-012](ADR-012-lambda-database-connections.md) | Database connection management for Lambda      | Proposed | OQ-28 (decision requested)         |
-| [ADR-013](ADR-013-authorization-responses.md)     | Resource authorization and not-found responses | Accepted | —                                  |
-| [ADR-014](ADR-014-object-storage.md)              | Object storage adapters                        | Accepted | OQ-13 resolved; OQ-3 still open    |
-| [ADR-015](ADR-015-ingestion-pipeline.md)          | PDF ingestion pipeline                         | Accepted | OQ-6, OQ-14 provisional; OQ-3 open |
+| ADR                                               | Title                                          | Status                 | Blocked by                                       |
+| ------------------------------------------------- | ---------------------------------------------- | ---------------------- | ------------------------------------------------ |
+| [ADR-001](ADR-001-backend-architecture.md)        | Backend architecture                           | Accepted               | —                                                |
+| [ADR-002](ADR-002-vector-database.md)             | Vector database and the vector-store adapter   | Accepted (adapter)     | OQ-1: hosting when deployed still open           |
+| [ADR-003](ADR-003-chunking-strategy.md)           | Chunking strategy                              | Accepted               | OQ-16 provisional                                |
+| [ADR-004](ADR-004-embedding-provider.md)          | Embedding provider                             | Accepted (provisional) | OQ-17: port and first adapter fixed, vendor open |
+| ADR-005                                           | LLM provider                                   | Pending                | OQ-17                                            |
+| ADR-006                                           | Async processing architecture                  | Pending                | OQ-2                                             |
+| [ADR-007](ADR-007-authentication-strategy.md)     | Authentication strategy                        | Accepted               | OQ-19 (token storage) still open                 |
+| ADR-008                                           | AWS deployment architecture                    | Pending                | OQ-1, OQ-3, OQ-3b, OQ-19, OQ-23                  |
+| ADR-009                                           | RAG evaluation strategy                        | Pending                | OQ-22                                            |
+| [ADR-010](ADR-010-repository-tooling.md)          | Repository tooling                             | Accepted               | —                                                |
+| [ADR-011](ADR-011-job-enqueue-consistency.md)     | Document row / job enqueue consistency         | Proposed               | OQ-27 (decision requested)                       |
+| [ADR-012](ADR-012-lambda-database-connections.md) | Database connection management for Lambda      | Proposed               | OQ-28 (decision requested)                       |
+| [ADR-013](ADR-013-authorization-responses.md)     | Resource authorization and not-found responses | Accepted               | —                                                |
+| [ADR-014](ADR-014-object-storage.md)              | Object storage adapters                        | Accepted               | OQ-13 resolved; OQ-3 still open                  |
+| [ADR-015](ADR-015-ingestion-pipeline.md)          | PDF ingestion pipeline                         | Accepted               | OQ-6, OQ-14 provisional; OQ-3 open               |
 
 Decisions that only affect ingestion behaviour (OQ-3, OQ-5, OQ-6, OQ-7, OQ-14), the conversation
 model (OQ-8, OQ-18), the RAG mechanisms (OQ-29, OQ-30) or observability (OQ-21) are recorded as

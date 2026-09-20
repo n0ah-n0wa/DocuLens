@@ -98,6 +98,10 @@ ignore = [
 "packages/core/src/doculens/testing/storage_contract.py" = [
   "S101", # a shared pytest contract suite: assert is the pytest idiom
 ]
+"packages/core/src/doculens/testing/vector_contract.py" = [
+  "S101",    # a shared pytest contract suite: assert is the pytest idiom
+  "PLR2004", # expected counts and scores are the values under test
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["doculens", "doculens_api", "doculens_worker"]

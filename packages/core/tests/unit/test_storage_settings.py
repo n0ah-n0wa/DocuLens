@@ -7,6 +7,7 @@ from pydantic import SecretStr, ValidationError
 
 from doculens.infrastructure.config import (
     CoreSettings,
+    EmbeddingProviderKind,
     Environment,
     StorageBackend,
     StorageEncryption,
@@ -80,6 +81,8 @@ DEPLOYED_S3 = {
     "storage_bucket": "doculens-prod-documents",
     "storage_region": "eu-central-1",
     "storage_encryption": StorageEncryption.AES256,
+    "embedding_provider": EmbeddingProviderKind.OPENAI,
+    "chroma_url": "https://chroma.internal:8000",
 }
 
 

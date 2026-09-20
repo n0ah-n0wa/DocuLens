@@ -6,7 +6,7 @@ cases behave the same way under both. Writes apply immediately to the shared ``I
 transactional isolation); ``commits`` counts explicit commits.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
 from types import TracebackType
@@ -206,6 +206,12 @@ class InMemoryDocumentContentRepository:
             return []
         pages = [p for p in self._store.pages.values() if p.document_id == document_id]
         return sorted(pages, key=lambda p: p.page_number)
+
+    async def set_vector_ids(self, document_id: UUID, vector_ids: Mapping[UUID, str]) -> None:
+        for chunk_id, vector_id in vector_ids.items():
+            chunk = self._store.chunks.get(chunk_id)
+            if chunk is not None and chunk.document_id == document_id:
+                self._store.chunks[chunk_id] = replace(chunk, vector_id=vector_id)
 
     async def list_chunks(self, owner_id: UUID, document_id: UUID) -> list[DocumentChunk]:
         if not self._owned(owner_id, document_id):

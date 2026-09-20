@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from doculens.infrastructure.config import Environment, LogFormat, LogLevel
+from doculens.infrastructure.config import Environment, LogFormat, LogLevel, VectorStoreKind
 from doculens.testing.fakes import InMemoryStore, InMemoryUnitOfWork
 from doculens_api.main import create_app
 from doculens_api.settings import ApiSettings
@@ -29,6 +29,7 @@ def settings(tmp_path: Path) -> ApiSettings:
         jwt_secret=SecretStr(TEST_JWT_SECRET),
         auth_rate_limit_attempts=1000,
         storage_local_root=tmp_path / "storage",
+        vector_store=VectorStoreKind.MEMORY,
     )
 
 

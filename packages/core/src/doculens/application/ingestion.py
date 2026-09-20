@@ -16,8 +16,14 @@ Processing is idempotent and safe under at-least-once delivery (§48, §49):
 - rejections of the file itself end in ``FAILED`` with a safe message; infrastructure failures
   (storage, database) propagate unchanged so the job is retried instead of failing the document.
 
-Embedding and indexing are later phases; a document rests in ``EMBEDDING`` once chunking
-completes, meaning "chunked, waiting for the next stage".
+``EMBEDDING`` turns the persisted chunks into vectors through the ``EmbeddingProvider`` and
+writes them to the ``VectorStore`` under the chunks' stable ids, one bounded window of chunks at
+a time so memory does not grow with the document; a chunk whose vector already exists with the
+same content hash and model is skipped, which makes a resumed or repeated run cheap and keeps a
+changed chunk (after re-extraction) or a changed model from serving a stale vector. ``INDEXING``
+prunes vectors that no chunk claims any more, records each chunk's ``vector_id`` and moves the
+document to ``READY``. Until then the document is not ``READY`` and retrieval must not serve it,
+so a partially written index is never observable.
 """
 
 import logging
@@ -30,18 +36,23 @@ from uuid import UUID
 
 from doculens.application.chunking import DocumentChunker
 from doculens.application.documents import clean_filename, ensure_collection_owned
+from doculens.application.embeddings import EmbeddingProvider
 from doculens.application.storage import ObjectStorage
 from doculens.application.unit_of_work import UnitOfWork, UnitOfWorkFactory
+from doculens.application.vectors import VectorStore, records_for_chunks
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
-from doculens.domain.errors import ConflictError, DependencyUnavailableError
+from doculens.domain.embeddings import EmbeddingError, EmbeddingUsage
+from doculens.domain.errors import ConflictError, DependencyUnavailableError, InvalidInputError
 from doculens.domain.ids import new_id
 from doculens.domain.ingestion import (
     PDF_MIME_TYPE,
     DocumentLimitReachedError,
     DuplicateDocumentError,
+    EmbeddingFailedError,
     ExtractionFailedError,
     ExtractionResult,
     FileTooLargeError,
+    IndexingFailedError,
     InvalidFileSignatureError,
     PdfInfo,
     PdfRejectedError,
@@ -55,6 +66,7 @@ from doculens.domain.ingestion import (
 )
 from doculens.domain.storage import ObjectNotFoundError, content_hash, document_object_key
 from doculens.domain.time import utc_now
+from doculens.domain.vectors import VectorMetadata, VectorStoreError, vector_id_for
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +201,15 @@ class DomainErrorLike(Protocol):
     diagnostics: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _Embedded:
+    """What the embedding stage established: the vector id of every chunk and what it cost."""
+
+    vector_ids: dict[UUID, str]
+    usage: EmbeddingUsage
+    embedded_now: int
+
+
 class _LostRaceError(Exception):
     """Internal: a compare-and-set found the document in another state."""
 
@@ -196,22 +217,28 @@ class _LostRaceError(Exception):
 class DocumentProcessor:
     """Runs the implemented stages (validation, extraction) for one document."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - every port the pipeline uses, wired by the composition root
         self,
         *,
         unit_of_work: UnitOfWorkFactory,
         storage: ObjectStorage,
         extractor: PdfExtractor,
         chunker: DocumentChunker,
+        embeddings: EmbeddingProvider,
+        vectors: VectorStore,
         limits: UploadLimits,
         clock: Clock = utc_now,
+        index_window: int = 128,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._storage = storage
         self._extractor = extractor
         self._chunker = chunker
+        self._embeddings = embeddings
+        self._vectors = vectors
         self._limits = limits
         self._clock = clock
+        self._index_window = max(1, index_window)
 
     async def process(self, document_id: UUID) -> ProcessingReport:
         async with self._unit_of_work() as uow:
@@ -241,6 +268,13 @@ class DocumentProcessor:
             if document.processing_status is ProcessingStatus.CHUNKING:
                 stages.append(ProcessingStatus.CHUNKING)
                 document = await self._chunk(document)
+            embedded: _Embedded | None = None
+            if document.processing_status is ProcessingStatus.EMBEDDING:
+                stages.append(ProcessingStatus.EMBEDDING)
+                document, embedded = await self._embed(document)
+            if document.processing_status is ProcessingStatus.INDEXING:
+                stages.append(ProcessingStatus.INDEXING)
+                document = await self._index(document, embedded)
         except _LostRaceError:
             logger.info(
                 "document was moved by another worker",
@@ -364,6 +398,137 @@ class DocumentProcessor:
         )
         return updated
 
+    async def _embed(self, document: Document) -> tuple[Document, "_Embedded | None"]:
+        try:
+            embedded = await self._ensure_vectors(document)
+        except (DependencyUnavailableError, _LostRaceError):
+            raise
+        except (EmbeddingError, InvalidInputError) as error:
+            failed = EmbeddingFailedError(diagnostics=_diagnostics_of(error))
+            return await self._fail(document, failed), None
+        except VectorStoreError as error:
+            rejected = IndexingFailedError(diagnostics=_diagnostics_of(error))
+            return await self._fail(document, rejected), None
+        except Exception as error:  # noqa: BLE001 - any other failure ends in FAILED (§12)
+            return await self._fail(document, _unexpected(error)), None
+        logger.info(
+            "document embedded",
+            extra={
+                "operation": "ingestion.embedded",
+                "document_id": str(document.id),
+                "chunk_count": len(embedded.vector_ids),
+                "embedded_now": embedded.embedded_now,
+                "embedding_requests": embedded.usage.requests,
+                "embedding_tokens": embedded.usage.tokens,
+                "embedding_latency_ms": round(embedded.usage.latency_ms, 1),
+            },
+        )
+        return await self._advance(document, ProcessingStatus.INDEXING), embedded
+
+    async def _index(self, document: Document, embedded: "_Embedded | None") -> Document:
+        try:
+            if embedded is None:
+                # Resumed after a crash: vectors written before the crash are found in the store
+                # and only the missing or changed ones are embedded again.
+                embedded = await self._ensure_vectors(document)
+            removed = await self._vectors.prune_document(
+                document.owner_id, document.id, keep=embedded.vector_ids.values()
+            )
+            return await self._persist_index(document, embedded, removed)
+        except (DependencyUnavailableError, _LostRaceError):
+            raise
+        except (EmbeddingError, InvalidInputError) as error:
+            return await self._fail(
+                document, EmbeddingFailedError(diagnostics=_diagnostics_of(error))
+            )
+        except VectorStoreError as error:
+            return await self._fail(
+                document, IndexingFailedError(diagnostics=_diagnostics_of(error))
+            )
+        except ConflictError as error:
+            raise _LostRaceError from error
+        except Exception as error:  # noqa: BLE001 - any other failure ends in FAILED (§12)
+            return await self._fail(document, _unexpected(error))
+
+    async def _ensure_vectors(self, document: Document) -> "_Embedded":
+        """Bring the store to one current vector per chunk, a bounded window at a time."""
+        async with self._unit_of_work() as uow:
+            chunks = await uow.document_content.list_chunks(document.owner_id, document.id)
+        vector_ids = {chunk.id: vector_id_for(chunk.id) for chunk in chunks}
+        if not chunks:
+            return _Embedded(vector_ids, EmbeddingUsage(), embedded_now=0)
+        present = await self._vectors.describe_document(document.owner_id, document.id)
+        pending = [
+            chunk
+            for chunk in chunks
+            if not self._is_current(present.get(vector_ids[chunk.id]), chunk)
+        ]
+        usage = EmbeddingUsage()
+        for start in range(0, len(pending), self._index_window):
+            window = pending[start : start + self._index_window]
+            result = await self._embeddings.embed_documents([chunk.text for chunk in window])
+            records = records_for_chunks(
+                window,
+                result,
+                owner_id=document.owner_id,
+                collection_id=document.collection_id,
+                embedding_provider=self._embeddings.name,
+            )
+            await self._vectors.upsert(document.owner_id, records)
+            usage += result.usage
+        return _Embedded(vector_ids, usage, embedded_now=len(pending))
+
+    def _is_current(self, existing: VectorMetadata | None, chunk: DocumentChunk) -> bool:
+        """A stored vector is reused only for unchanged text under the same model and provider."""
+        return (
+            existing is not None
+            and existing.content_hash == str(chunk.metadata.get("content_hash", ""))
+            and existing.embedding_model == self._embeddings.model
+            and existing.embedding_provider == self._embeddings.name
+        )
+
+    async def _persist_index(
+        self, document: Document, embedded: "_Embedded", removed: int
+    ) -> Document:
+        now = self._clock()
+        metadata: dict[str, object] = {
+            **document.metadata,
+            "indexing": {
+                "vector_store": self._vectors.collection,
+                "embedding_provider": self._embeddings.name,
+                "embedding_model": self._embeddings.model,
+                "vector_count": len(embedded.vector_ids),
+                "embedded_now": embedded.embedded_now,
+                "stale_vectors_removed": removed,
+                "embedding_requests": embedded.usage.requests,
+                "embedding_tokens": embedded.usage.tokens,
+                "embedding_latency_ms": round(embedded.usage.latency_ms, 1),
+                "indexed_at": now.isoformat(),
+            },
+        }
+        updated = document.with_indexing(
+            chunk_count=len(embedded.vector_ids), metadata=metadata, now=now
+        )
+        updated = updated.transition_to(ProcessingStatus.READY, now=now)
+        async with self._unit_of_work() as uow:
+            await uow.document_content.set_vector_ids(document.id, embedded.vector_ids)
+            if not await uow.documents.compare_and_update(
+                updated, expected_status=document.processing_status
+            ):
+                await uow.rollback()
+                raise _LostRaceError
+            await uow.commit()
+        logger.info(
+            "document indexed",
+            extra={
+                "operation": "ingestion.indexed",
+                "document_id": str(document.id),
+                "vector_count": len(embedded.vector_ids),
+                "stale_vectors_removed": removed,
+            },
+        )
+        return updated
+
     async def _persist_chunks(
         self, document: Document, updated: Document, chunks: list[DocumentChunk]
     ) -> None:
@@ -432,6 +597,11 @@ class DocumentProcessor:
             if not await uow.documents.compare_and_update(document, expected_status=expected):
                 raise _LostRaceError
             await uow.commit()
+
+
+def _diagnostics_of(error: EmbeddingError | VectorStoreError | InvalidInputError) -> str:
+    diagnostics = getattr(error, "diagnostics", None)
+    return f"{error.code}: {diagnostics or error.message}"
 
 
 def _unexpected(error: Exception) -> PdfRejectedError:

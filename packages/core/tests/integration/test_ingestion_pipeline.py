@@ -29,8 +29,10 @@ from doculens.domain.storage import content_hash
 from doculens.infrastructure.pdf import ExtractionLimits, PyMuPdfExtractor
 from doculens.infrastructure.persistence.database import Database
 from doculens.infrastructure.storage import FilesystemObjectStorage
+from doculens.testing.embeddings import FakeEmbeddingProvider
 from doculens.testing.factories import Factories
 from doculens.testing.pdfs import ZERO_PAGE_PDF, corrupted_pdf, padded_pdf, pdf_with_pages
+from doculens.testing.vectors import InMemoryVectorStore
 
 pytestmark = pytest.mark.integration
 
@@ -45,6 +47,8 @@ class Pipeline:
         self.database = database
         self.owner_id = owner_id
         self.storage = FilesystemObjectStorage(root)
+        self.embeddings = FakeEmbeddingProvider(dimensions=8)
+        self.vectors = InMemoryVectorStore()
         self.intake = DocumentIntakeService(
             unit_of_work=database.unit_of_work, storage=self.storage, limits=LIMITS
         )
@@ -62,6 +66,8 @@ class Pipeline:
             chunker=DocumentChunker(
                 ChunkingConfig(chunk_size=32, chunk_overlap=4, min_chunk_size=4)
             ),
+            embeddings=self.embeddings,
+            vectors=self.vectors,
             limits=LIMITS,
         )
 
@@ -116,9 +122,11 @@ async def test_a_valid_pdf_is_extracted_page_by_page_with_its_metadata(pipeline:
         ProcessingStatus.VALIDATING,
         ProcessingStatus.EXTRACTING,
         ProcessingStatus.CHUNKING,
+        ProcessingStatus.EMBEDDING,
+        ProcessingStatus.INDEXING,
     )
     stored = await pipeline.document(document.id)
-    assert stored.processing_status is ProcessingStatus.EMBEDDING
+    assert stored.processing_status is ProcessingStatus.READY
     chunks = await pipeline.chunks(document.id)
     assert stored.chunk_count == len(chunks) == 2
     assert [c.metadata["page_number"] for c in chunks] == [1, 2]
@@ -170,7 +178,7 @@ async def test_pages_without_text_are_recorded_not_dropped(pipeline: Pipeline) -
     await pipeline.processor.process(document.id)
 
     stored = await pipeline.document(document.id)
-    assert stored.processing_status is ProcessingStatus.EMBEDDING
+    assert stored.processing_status is ProcessingStatus.READY
     assert stored.page_count == 3
     assert stored.chunk_count == 1
     extraction = stored.metadata["extraction"]
@@ -257,13 +265,18 @@ async def test_processing_is_idempotent_and_resumable(
         assert stored is not None
         assert await uow.documents.compare_and_update(
             replace(stored, processing_status=ProcessingStatus.EXTRACTING),
-            expected_status=ProcessingStatus.EMBEDDING,
+            expected_status=ProcessingStatus.READY,
         )
         await uow.commit()
 
     resumed = await pipeline.processor.process(document.id)
 
-    assert resumed.stages == (ProcessingStatus.EXTRACTING, ProcessingStatus.CHUNKING)
+    assert resumed.stages == (
+        ProcessingStatus.EXTRACTING,
+        ProcessingStatus.CHUNKING,
+        ProcessingStatus.EMBEDDING,
+        ProcessingStatus.INDEXING,
+    )
     pages = await pipeline.pages(document.id)
     assert [p.page_number for p in pages] == [1, 2]
     assert {p.id for p in pages}.isdisjoint(original_ids)
@@ -301,6 +314,8 @@ async def test_rechunking_upserts_by_stable_id_and_removes_stale_chunks(
         storage=pipeline.storage,
         extractor=pipeline.processor._extractor,  # noqa: SLF001 - reuse the isolated parser
         chunker=DocumentChunker(ChunkingConfig(chunk_size=512, chunk_overlap=0, min_chunk_size=1)),
+        embeddings=pipeline.embeddings,
+        vectors=pipeline.vectors,
         limits=LIMITS,
     )
     async with database.unit_of_work() as uow:
@@ -308,13 +323,17 @@ async def test_rechunking_upserts_by_stable_id_and_removes_stale_chunks(
         assert stored is not None
         assert await uow.documents.compare_and_update(
             replace(stored, processing_status=ProcessingStatus.CHUNKING),
-            expected_status=ProcessingStatus.EMBEDDING,
+            expected_status=ProcessingStatus.READY,
         )
         await uow.commit()
 
     report = await coarse.process(document.id)
 
-    assert report.stages == (ProcessingStatus.CHUNKING,)
+    assert report.stages == (
+        ProcessingStatus.CHUNKING,
+        ProcessingStatus.EMBEDDING,
+        ProcessingStatus.INDEXING,
+    )
     after = await pipeline.chunks(document.id)
     assert [c.chunk_index for c in after] == [0, 1]  # one chunk per page: same indexes
     assert [c.id for c in after] == [c.id for c in before]

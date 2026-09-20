@@ -8,7 +8,7 @@ A unit of work is one transaction: repositories obtained from it share the same 
 nothing is durable until ``commit`` is awaited. Leaving the context without committing rolls back.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
@@ -99,6 +99,10 @@ class DocumentContentRepository(Protocol):
         Existing rows with the same id are updated in place (their citations survive), rows
         whose id is not in the new set are removed (§32: re-indexing never duplicates).
         """
+        ...
+
+    async def set_vector_ids(self, document_id: UUID, vector_ids: Mapping[UUID, str]) -> None:
+        """Record which vector holds each chunk once indexing succeeded (§7.5 ``vector_id``)."""
         ...
 
     async def list_pages(self, owner_id: UUID, document_id: UUID) -> list[DocumentPage]: ...

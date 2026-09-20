@@ -10,6 +10,7 @@ from uuid import UUID
 
 from doculens.application.auth import Clock
 from doculens.application.unit_of_work import UnitOfWork, UnitOfWorkFactory
+from doculens.application.vectors import VectorStore
 from doculens.domain.collections import CollectionNotFoundError
 from doculens.domain.common import UNSET, Unset, clean_label
 from doculens.domain.documents import MAX_FILENAME_LENGTH, Document, DocumentNotFoundError
@@ -31,8 +32,15 @@ async def ensure_collection_owned(uow: UnitOfWork, owner_id: UUID, collection_id
 
 
 class DocumentService:
-    def __init__(self, *, unit_of_work: UnitOfWorkFactory, clock: Clock = utc_now) -> None:
+    def __init__(
+        self,
+        *,
+        unit_of_work: UnitOfWorkFactory,
+        vectors: VectorStore | None = None,
+        clock: Clock = utc_now,
+    ) -> None:
         self._unit_of_work = unit_of_work
+        self._vectors = vectors
         self._clock = clock
 
     async def list_for_owner(
@@ -79,4 +87,10 @@ class DocumentService:
             )
             await uow.documents.update(updated)
             await uow.commit()
+        if self._vectors is not None and updated.collection_id != current.collection_id:
+            # PostgreSQL is authoritative; the vectors carry the collection for filtering (§16)
+            # and must follow the move, otherwise scoped retrieval would look in the old place.
+            await self._vectors.set_document_collection(
+                owner_id, document_id, updated.collection_id
+            )
         return updated

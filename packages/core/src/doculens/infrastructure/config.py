@@ -54,6 +54,20 @@ class StorageEncryption(StrEnum):
     AWS_KMS = "aws:kms"
 
 
+class EmbeddingProviderKind(StrEnum):
+    """Provider selected by ``EMBEDDING_PROVIDER`` (§15, §73; vendor choice is OQ-17)."""
+
+    FAKE = "fake"
+    OPENAI = "openai"
+
+
+class VectorStoreKind(StrEnum):
+    """Store selected by ``VECTOR_STORE`` (§16); hosting of ChromaDB when deployed is OQ-1."""
+
+    CHROMA = "chroma"
+    MEMORY = "memory"
+
+
 class ConfigurationError(RuntimeError):
     """Raised at start-up when the environment does not describe a valid configuration."""
 
@@ -152,6 +166,49 @@ class CoreSettings(BaseSettings):
     chunk_overlap: int = Field(default=64, ge=0, le=4096)
     min_chunk_size: int = Field(default=64, ge=1, le=8192)
 
+    embedding_provider: EmbeddingProviderKind = Field(
+        default=EmbeddingProviderKind.FAKE,
+        description="fake (local development and tests) or openai (any OpenAI-compatible API).",
+    )
+    embedding_model: str = Field(default="text-embedding-3-small", min_length=1, max_length=200)
+    embedding_dimensions: int | None = Field(
+        default=None,
+        ge=1,
+        le=16384,
+        description="Requested vector size when the model supports it.",
+    )
+    embedding_api_base_url: str = Field(
+        default="https://api.openai.com/v1",
+        description="OpenAI-compatible base URL (OpenAI, Azure, Ollama, vLLM).",
+    )
+    embedding_api_key: SecretStr | None = None
+    embedding_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    embedding_max_attempts: int = Field(default=4, ge=1, le=10)
+    embedding_backoff_base_seconds: float = Field(default=0.5, ge=0, le=60)
+    embedding_backoff_max_seconds: float = Field(default=8.0, ge=0, le=300)
+    embedding_max_batch_size: int = Field(default=64, ge=1, le=2048)
+    embedding_max_batch_characters: int = Field(default=200_000, ge=1, le=10_000_000)
+    embedding_max_input_characters: int = Field(default=32_000, ge=1, le=1_000_000)
+    embedding_max_concurrency: int = Field(default=4, ge=1, le=64)
+
+    vector_store: VectorStoreKind = Field(
+        default=VectorStoreKind.CHROMA,
+        description="chroma (the required store, §16) or memory (unit tests only).",
+    )
+    chroma_url: str = Field(default="http://localhost:8001", description="ChromaDB server URL.")
+    chroma_api_token: SecretStr | None = None
+    chroma_collection_prefix: str = Field(
+        default="doculens", pattern=r"^[a-z0-9][a-z0-9._-]{0,40}$"
+    )
+    chroma_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    vector_search_max_results: int = Field(default=100, ge=1, le=1000)
+    indexing_batch_chunks: int = Field(
+        default=128,
+        ge=1,
+        le=10_000,
+        description="Chunks embedded and written per window; bounds worker memory (§53).",
+    )
+
     storage_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     storage_read_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     storage_max_attempts: int = Field(default=3, ge=1, le=10)
@@ -189,12 +246,36 @@ class CoreSettings(BaseSettings):
             problems.append("MAX_FILE_SIZE_MB must not exceed STORAGE_MAX_OBJECT_BYTES")
         if self.pdf_max_characters_per_page > self.pdf_max_total_characters:
             problems.append("PDF_MAX_CHARACTERS_PER_PAGE must not exceed PDF_MAX_TOTAL_CHARACTERS")
+        if problems:
+            message = "invalid storage configuration: " + "; ".join(problems)
+            raise ValueError(message)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_processing(self) -> Self:
+        problems: list[str] = []
         if self.chunk_overlap >= self.chunk_size:
             problems.append("CHUNK_OVERLAP must be smaller than CHUNK_SIZE")
         if self.min_chunk_size > self.chunk_size:
             problems.append("MIN_CHUNK_SIZE must not exceed CHUNK_SIZE")
+        if self.embedding_max_input_characters > self.embedding_max_batch_characters:
+            problems.append(
+                "EMBEDDING_MAX_INPUT_CHARACTERS must not exceed EMBEDDING_MAX_BATCH_CHARACTERS"
+            )
+        if self.embedding_backoff_base_seconds > self.embedding_backoff_max_seconds:
+            problems.append(
+                "EMBEDDING_BACKOFF_BASE_SECONDS must not exceed EMBEDDING_BACKOFF_MAX_SECONDS"
+            )
+        if not self.chroma_url.startswith(ENDPOINT_SCHEMES):
+            problems.append("CHROMA_URL must start with http:// or https://")
+        if "@" in self.chroma_url.split("://", 1)[-1].split("/", 1)[0]:
+            problems.append("CHROMA_URL must not embed credentials")
+        if not self.embedding_api_base_url.startswith(ENDPOINT_SCHEMES):
+            problems.append("EMBEDDING_API_BASE_URL must start with http:// or https://")
+        if "@" in self.embedding_api_base_url.split("://", 1)[-1].split("/", 1)[0]:
+            problems.append("EMBEDDING_API_BASE_URL must not embed credentials")
         if problems:
-            message = "invalid storage configuration: " + "; ".join(problems)
+            message = "invalid processing configuration: " + "; ".join(problems)
             raise ValueError(message)
         return self
 
@@ -207,11 +288,26 @@ class CoreSettings(BaseSettings):
     def _reject_unsafe_deployed_configuration(self) -> Self:
         if not self.is_deployed:
             return self
+        problems = [
+            *self._deployed_platform_problems(),
+            *self._deployed_storage_problems(),
+            *self._deployed_ai_problems(),
+        ]
+        if problems:
+            message = f"unsafe configuration for APP_ENV={self.app_env}: " + "; ".join(problems)
+            raise ValueError(message)
+        return self
+
+    def _deployed_platform_problems(self) -> list[str]:
         problems: list[str] = []
         if self.log_format is not LogFormat.JSON:
             problems.append("LOG_FORMAT must be json (structured logging is required, §50)")
         if self.database_echo:
             problems.append("DATABASE_ECHO must be false (statement logging can expose data, §68)")
+        return problems
+
+    def _deployed_storage_problems(self) -> list[str]:
+        problems: list[str] = []
         if self.storage_backend is not StorageBackend.S3:
             problems.append("STORAGE_BACKEND must be s3 (originals must live in S3, §11)")
         if self.storage_encryption is StorageEncryption.NONE:
@@ -228,10 +324,19 @@ class CoreSettings(BaseSettings):
             problems.append(
                 "STORAGE_ACCESS_KEY_ID must be unset (use the execution role, least privilege §57)"
             )
-        if problems:
-            message = f"unsafe configuration for APP_ENV={self.app_env}: " + "; ".join(problems)
-            raise ValueError(message)
-        return self
+        return problems
+
+    def _deployed_ai_problems(self) -> list[str]:
+        problems: list[str] = []
+        if self.vector_store is not VectorStoreKind.CHROMA:
+            problems.append("VECTOR_STORE must be chroma (§16)")
+        if not self.chroma_url.startswith("https://"):
+            problems.append("CHROMA_URL must use https (encryption in transit, §53)")
+        if self.embedding_provider is EmbeddingProviderKind.FAKE:
+            problems.append("EMBEDDING_PROVIDER must not be fake (no real vectors, §15)")
+        if not self.embedding_api_base_url.startswith("https://"):
+            problems.append("EMBEDDING_API_BASE_URL must use https (encryption in transit, §53)")
+        return problems
 
 
 def load_settings[SettingsT: CoreSettings](

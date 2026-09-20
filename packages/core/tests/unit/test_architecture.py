@@ -30,6 +30,7 @@ EXTERNAL_FORBIDDEN = frozenset(
         "langchain_community",
         "langchain_core",
         "minio",
+        "openai",
         "psycopg",
         "pydantic_settings",
         "pymupdf",

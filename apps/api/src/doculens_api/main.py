@@ -30,6 +30,7 @@ from doculens.infrastructure.ratelimit import InMemoryRateLimiter
 from doculens.infrastructure.security.passwords import Argon2PasswordHasher
 from doculens.infrastructure.security.tokens import JwtTokenCodec
 from doculens.infrastructure.storage import ObjectStorageProbe, build_object_storage
+from doculens.infrastructure.vectors import ChromaVectorStore, VectorStoreProbe, build_vector_store
 from doculens_api import SERVICE_NAME, __version__
 from doculens_api.dependencies import AppComponents
 from doculens_api.errors import DEFAULT_ERROR_RESPONSES, register_error_handlers
@@ -73,9 +74,11 @@ def create_app(
     )
     database = Database(resolved)
     object_storage = build_object_storage(resolved)
+    vector_store = build_vector_store(resolved)
     default_probes: list[HealthProbe] = [
         DatabaseProbe(database),
         ObjectStorageProbe(object_storage),
+        *([VectorStoreProbe(vector_store)] if isinstance(vector_store, ChromaVectorStore) else []),
     ]
     readiness_probes = probes if probes is not None else default_probes
     unit_of_work = (
@@ -105,10 +108,11 @@ def create_app(
         ),
         auth=auth_service,
         collections=CollectionService(unit_of_work=unit_of_work),
-        documents=DocumentService(unit_of_work=unit_of_work),
+        documents=DocumentService(unit_of_work=unit_of_work, vectors=vector_store),
         conversations=ConversationService(unit_of_work=unit_of_work),
         rate_limiter=rate_limiter if rate_limiter is not None else InMemoryRateLimiter(),
         object_storage=object_storage,
+        vector_store=vector_store,
     )
 
     @asynccontextmanager

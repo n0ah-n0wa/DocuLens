@@ -8,7 +8,13 @@ from fastapi import APIRouter, FastAPI, Response
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from doculens.infrastructure.config import Environment, LogLevel, StorageBackend, StorageEncryption
+from doculens.infrastructure.config import (
+    EmbeddingProviderKind,
+    Environment,
+    LogLevel,
+    StorageBackend,
+    StorageEncryption,
+)
 from doculens_api.main import create_app
 from doculens_api.settings import ApiSettings
 
@@ -57,6 +63,8 @@ def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
         storage_bucket="doculens-test-documents",
         storage_region="eu-central-1",
         storage_encryption=StorageEncryption.AES256,
+        embedding_provider=EmbeddingProviderKind.OPENAI,
+        chroma_url="https://chroma.internal:8000",
     )
     opted_in = ApiSettings(
         _env_file=None,
@@ -68,6 +76,8 @@ def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
         storage_bucket="doculens-test-documents",
         storage_region="eu-central-1",
         storage_encryption=StorageEncryption.AES256,
+        embedding_provider=EmbeddingProviderKind.OPENAI,
+        chroma_url="https://chroma.internal:8000",
     )
 
     assert local.docs_enabled is True

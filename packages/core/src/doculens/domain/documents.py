@@ -93,6 +93,18 @@ class Document:
         """Record the chunk set; the status transition is a separate, explicit step."""
         return replace(self, chunk_count=chunk_count, metadata=dict(metadata), updated_at=now)
 
+    def with_indexing(
+        self, *, chunk_count: int, metadata: Mapping[str, object], now: datetime
+    ) -> Self:
+        """Record a completed indexing run; the status transition is a separate step."""
+        return replace(
+            self,
+            chunk_count=chunk_count,
+            metadata=dict(metadata),
+            indexed_at=now,
+            updated_at=now,
+        )
+
     def transition_to(self, status: ProcessingStatus, *, now: datetime) -> Self:
         """Return a copy in ``status`` if the transition is allowed by §7.3, else raise."""
         if status not in ALLOWED_TRANSITIONS[self.processing_status]:

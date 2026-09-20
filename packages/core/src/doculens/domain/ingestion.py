@@ -148,6 +148,20 @@ class ContentTooLargeError(PdfRejectedError):
     default_message = "The document contains more text than can be processed."
 
 
+class EmbeddingFailedError(PdfRejectedError):
+    """The embedding provider permanently refused the document's chunks (§15, §67)."""
+
+    code = "EMBEDDING_FAILED"
+    default_message = "Embeddings could not be generated for the document."
+
+
+class IndexingFailedError(PdfRejectedError):
+    """The vector store refused the document's vectors (dimension, ownership, data)."""
+
+    code = "INDEXING_FAILED"
+    default_message = "The document could not be indexed."
+
+
 _PDF_REJECTIONS: tuple[type[PdfRejectedError], ...] = (
     CorruptedPdfError,
     EncryptedPdfError,
@@ -158,6 +172,8 @@ _PDF_REJECTIONS: tuple[type[PdfRejectedError], ...] = (
     StoredFileMismatchError,
     StoredFileMissingError,
     ContentTooLargeError,
+    EmbeddingFailedError,
+    IndexingFailedError,
 )
 
 

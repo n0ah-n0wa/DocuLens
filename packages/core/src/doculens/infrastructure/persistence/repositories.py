@@ -5,7 +5,7 @@ filter by ``owner_id`` (§9). ``update`` methods load the row and copy the entit
 so callers only ever handle domain entities.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
@@ -285,6 +285,18 @@ class SqlAlchemyDocumentContentRepository:
             .order_by(DocumentPageModel.page_number)
         )
         return [mappers.page_to_domain(row) for row in rows]
+
+    async def set_vector_ids(self, document_id: UUID, vector_ids: Mapping[UUID, str]) -> None:
+        for chunk_id, vector_id in vector_ids.items():
+            await self._session.execute(
+                update(DocumentChunkModel)
+                .where(
+                    DocumentChunkModel.id == chunk_id,
+                    DocumentChunkModel.document_id == document_id,
+                )
+                .values(vector_id=vector_id)
+            )
+        await self._session.flush()
 
     async def list_chunks(self, owner_id: UUID, document_id: UUID) -> list[DocumentChunk]:
         rows = await self._session.scalars(

@@ -19,6 +19,7 @@ from doculens.application.documents import DocumentService
 from doculens.application.health import ReadinessService
 from doculens.application.ratelimit import RateLimiter
 from doculens.application.storage import ObjectStorage, OwnerScopedObjectStorage
+from doculens.application.vectors import VectorStore
 from doculens.domain.errors import UnauthenticatedError
 from doculens.domain.users import User
 from doculens.infrastructure.persistence.database import Database
@@ -42,6 +43,7 @@ class AppComponents:
     conversations: ConversationService
     rate_limiter: RateLimiter
     object_storage: ObjectStorage
+    vector_store: VectorStore
 
 
 def components_of(request: Request) -> AppComponents:
