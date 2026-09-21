@@ -1,18 +1,18 @@
-"""The RAG service boundary (SPECIFICATIONS.md §17 to §27, §72, §73).
+"""The RAG service boundary (SPECIFICATIONS.md §17 to §28, §72, §73).
 
-Everything outside the application layer (API routes, conversation use cases, evaluation
-harness) talks to retrieval-augmented generation through :class:`RagService` and the plain
-data types below. Behind the boundary sit the §17 stages; in front of it nobody sees a vector
-store, an embedding provider or a prompt. Today the boundary answers with structured evidence;
-grounded answer generation (§21) is added behind the same boundary once the LLM provider is
-decided (OQ-17).
+Everything outside the application layer (API routes, evaluation harness) talks to
+retrieval-augmented generation through :class:`RagService` and the plain data types below.
+Behind the boundary sit the §17 stages and the answering pipeline; in front of it nobody sees a
+vector store, an embedding provider, a language model or a prompt.
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
+from doculens.application.answering import AnswerService
 from doculens.application.retrieval import RetrievalResult, RetrievalService
+from doculens.domain.answering import AnswerResult
 from doculens.domain.retrieval import RetrievalScope
 
 
@@ -35,8 +35,9 @@ class RagQuery:
 
 
 class RagService:
-    def __init__(self, *, retrieval: RetrievalService) -> None:
+    def __init__(self, *, retrieval: RetrievalService, answering: AnswerService) -> None:
         self._retrieval = retrieval
+        self._answering = answering
 
     async def retrieve(self, query: RagQuery) -> RetrievalResult:
         """Structured evidence for the question, scoped to the caller's own READY documents."""
@@ -44,6 +45,17 @@ class RagService:
         return await self._retrieval.retrieve(
             scope.owner_id,
             query.question,
+            document_ids=scope.document_ids,
+            collection_id=scope.collection_id,
+        )
+
+    async def answer(self, query: RagQuery, *, conversation_id: UUID | None = None) -> AnswerResult:
+        """A grounded, cited answer persisted in the conversation (§21, §23, §28)."""
+        scope = query.scope()
+        return await self._answering.answer(
+            scope.owner_id,
+            query.question,
+            conversation_id=conversation_id,
             document_ids=scope.document_ids,
             collection_id=scope.collection_id,
         )

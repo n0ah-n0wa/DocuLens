@@ -9,12 +9,14 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from doculens.application.answering import AnswerService
 from doculens.application.rag import RagQuery, RagService
 from doculens.application.retrieval import RetrievalService, Retrieved, VectorRetriever
 from doculens.domain.chunking import chunk_id
 from doculens.domain.collections import CollectionNotFoundError
 from doculens.domain.documents import DocumentNotFoundError, ProcessingStatus
 from doculens.domain.embeddings import EmbeddingProviderUnavailableError
+from doculens.domain.prompting import PromptBuilder
 from doculens.domain.retrieval import (
     ContextLimits,
     InvalidQueryError,
@@ -26,6 +28,7 @@ from doculens.domain.retrieval import (
 from doculens.domain.vectors import SearchFilter, SearchHit, VectorStoreUnavailableError
 from doculens.testing.factories import Factories
 from doculens.testing.fakes import InMemoryDocumentRepository
+from doculens.testing.llm import FakeLLMProvider
 from doculens.testing.retrieval import IndexedCorpus
 from doculens.testing.vectors import InMemoryVectorStore
 
@@ -49,7 +52,15 @@ class World(IndexedCorpus[InMemoryVectorStore]):
             limits=LIMITS,
             context_limits=CONTEXT,
         )
-        self.rag = RagService(retrieval=self.service)
+        self.rag = RagService(
+            retrieval=self.service,
+            answering=AnswerService(
+                unit_of_work=self.unit_of_work,
+                retrieval=self.service,
+                prompt_builder=PromptBuilder(),
+                llm=FakeLLMProvider(),
+            ),
+        )
 
 
 @pytest.fixture

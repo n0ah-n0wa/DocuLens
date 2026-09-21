@@ -21,9 +21,8 @@ import asyncio
 import logging
 import random
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
-from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -38,37 +37,18 @@ from doculens.domain.embeddings import (
     EmbeddingUsage,
     Vector,
 )
-from doculens.domain.time import utc_now
+from doculens.infrastructure.providers import (
+    RETRYABLE_STATUS_CODES,
+    Jitter,
+    RetryPolicy,
+    Sleeper,
+    diagnostics_from,
+    retry_after_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
 PROVIDER_NAME = "openai-compatible"
-RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
-_MAX_DIAGNOSTIC_CHARACTERS = 300
-
-Sleeper = Callable[[float], Awaitable[None]]
-Jitter = Callable[[], float]  # a number in [0, 1)
-
-
-@dataclass(frozen=True, slots=True)
-class RetryPolicy:
-    """Bounded exponential backoff: ``base * 2**attempt`` with full jitter, capped at ``max``."""
-
-    max_attempts: int
-    base_delay_seconds: float
-    max_delay_seconds: float
-
-    def __post_init__(self) -> None:
-        if self.max_attempts < 1 or self.base_delay_seconds < 0 or self.max_delay_seconds < 0:
-            message = "retry policy values must be non-negative and allow one attempt"
-            raise ValueError(message)
-
-    def delay(self, attempt: int, *, jitter: float, retry_after: float | None) -> float:
-        """Seconds to wait before retry number ``attempt`` (1-based)."""
-        if retry_after is not None:
-            return min(max(retry_after, 0.0), self.max_delay_seconds)
-        ceiling = min(self.base_delay_seconds * (2.0 ** (attempt - 1)), self.max_delay_seconds)
-        return ceiling * jitter
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +169,7 @@ class OpenAICompatibleEmbeddingProvider:
             raise _RetryableError(
                 reason=f"http {response.status_code}",
                 status_code=response.status_code,
-                retry_after=_retry_after_seconds(response.headers),
+                retry_after=retry_after_seconds(response.headers),
                 provider=self,
             )
         if response.status_code >= 400:  # noqa: PLR2004 - HTTP client/server error boundary
@@ -198,7 +178,7 @@ class OpenAICompatibleEmbeddingProvider:
                 model=self.model,
                 status_code=response.status_code,
                 attempts=attempt,
-                diagnostics=_diagnostics_from(response),
+                diagnostics=diagnostics_from(response),
             )
         result = self._parse(response, expected=len(batch), latency_ms=latency_ms)
         logger.info(
@@ -302,28 +282,3 @@ class _RetryableError(Exception):
             retry_after_seconds=self.retry_after,
             diagnostics=f"{self.reason} after {attempts} attempts",
         )
-
-
-def _retry_after_seconds(headers: Mapping[str, str]) -> float | None:
-    value = headers.get("retry-after")
-    if value is None:
-        return None
-    value = value.strip()
-    if value.isdigit():
-        return float(value)
-    try:
-        when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-    return max(0.0, (when - utc_now()).total_seconds())
-
-
-def _diagnostics_from(response: httpx.Response) -> str:
-    """A bounded, key-free summary of an error body for server-side logs."""
-    try:
-        body = response.json()
-        message = body.get("error", {}).get("message") if isinstance(body, dict) else None
-    except ValueError:
-        message = None
-    text = message if isinstance(message, str) else response.text
-    return f"http {response.status_code}: {text[:_MAX_DIAGNOSTIC_CHARACTERS]}"

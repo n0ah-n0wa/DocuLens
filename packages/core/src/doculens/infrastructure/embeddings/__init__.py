@@ -5,8 +5,8 @@ from doculens.infrastructure.config import CoreSettings, EmbeddingProviderKind
 from doculens.infrastructure.embeddings.openai_compatible import (
     OpenAICompatibleConfig,
     OpenAICompatibleEmbeddingProvider,
-    RetryPolicy,
 )
+from doculens.infrastructure.providers import RetryPolicy
 from doculens.testing.embeddings import FakeEmbeddingProvider
 
 

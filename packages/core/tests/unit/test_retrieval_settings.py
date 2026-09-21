@@ -5,11 +5,13 @@ from pydantic import SecretStr, ValidationError
 
 from doculens.application.rag import RagService
 from doculens.application.retrieval import RetrievalService
-from doculens.domain.retrieval import RetrievalStrategy
+from doculens.domain.retrieval import AssembledContext, RetrievalStrategy
 from doculens.infrastructure.config import CoreSettings, EmbeddingProviderKind, VectorStoreKind
 from doculens.infrastructure.rag import (
     build_configured_retriever,
     build_context_limits,
+    build_prompt_builder,
+    build_prompt_limits,
     build_rag_service,
     build_retrieval_limits,
     build_retrieval_service,
@@ -25,6 +27,10 @@ def _settings(**overrides: object) -> CoreSettings:
     return CoreSettings(_env_file=None, database_url=DB_URL, **overrides)  # type: ignore[arg-type]
 
 
+def _empty_context() -> AssembledContext:
+    return AssembledContext(items=(), characters=0, omitted=0)
+
+
 def test_defaults_follow_the_specification_examples() -> None:
     limits = build_retrieval_limits(_settings())
     context = build_context_limits(_settings())
@@ -38,6 +44,9 @@ def test_defaults_follow_the_specification_examples() -> None:
     assert context.max_characters == 12_000
     assert context.max_chunks_per_document == 3
     assert _settings().retrieval_strategy is RetrievalStrategy.HYBRID
+    prompt = build_prompt_limits(_settings())
+    assert (prompt.max_history_messages, prompt.max_history_characters) == (10, 8_000)
+    assert build_prompt_builder(_settings()).build("q", _empty_context()).history == ()
 
 
 @pytest.mark.parametrize(

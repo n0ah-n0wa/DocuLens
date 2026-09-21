@@ -8,6 +8,7 @@ from doculens.infrastructure.config import (
     CoreSettings,
     EmbeddingProviderKind,
     Environment,
+    LLMProviderKind,
     RerankerKind,
     StorageBackend,
     StorageEncryption,
@@ -29,6 +30,7 @@ DEPLOYED = {
     "storage_region": "eu-central-1",
     "storage_encryption": StorageEncryption.AES256,
     "embedding_provider": EmbeddingProviderKind.OPENAI,
+    "llm_provider": LLMProviderKind.OPENAI,
     "chroma_url": "https://chroma.internal:8000",
 }
 

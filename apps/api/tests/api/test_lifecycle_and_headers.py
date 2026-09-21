@@ -11,6 +11,7 @@ from pydantic import SecretStr
 from doculens.infrastructure.config import (
     EmbeddingProviderKind,
     Environment,
+    LLMProviderKind,
     LogLevel,
     StorageBackend,
     StorageEncryption,
@@ -64,6 +65,7 @@ def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
         storage_region="eu-central-1",
         storage_encryption=StorageEncryption.AES256,
         embedding_provider=EmbeddingProviderKind.OPENAI,
+        llm_provider=LLMProviderKind.OPENAI,
         chroma_url="https://chroma.internal:8000",
     )
     opted_in = ApiSettings(
@@ -77,6 +79,7 @@ def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
         storage_region="eu-central-1",
         storage_encryption=StorageEncryption.AES256,
         embedding_provider=EmbeddingProviderKind.OPENAI,
+        llm_provider=LLMProviderKind.OPENAI,
         chroma_url="https://chroma.internal:8000",
     )
 

@@ -38,6 +38,7 @@ def test_values_are_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("STORAGE_ENCRYPTION", "AES256")
     monkeypatch.setenv("STORAGE_REGION", "eu-central-1")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("CHROMA_URL", "https://chroma.internal:8000")
 
     settings = load_settings(CoreSettings, env_file=None)

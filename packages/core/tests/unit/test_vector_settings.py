@@ -7,6 +7,7 @@ from doculens.infrastructure.config import (
     CoreSettings,
     EmbeddingProviderKind,
     Environment,
+    LLMProviderKind,
     StorageBackend,
     StorageEncryption,
     VectorStoreKind,
@@ -24,6 +25,7 @@ DEPLOYED = {
     "storage_region": "eu-central-1",
     "storage_encryption": StorageEncryption.AES256,
     "embedding_provider": EmbeddingProviderKind.OPENAI,
+    "llm_provider": LLMProviderKind.OPENAI,
 }
 
 

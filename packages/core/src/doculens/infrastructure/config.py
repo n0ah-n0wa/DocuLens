@@ -15,6 +15,7 @@ from typing import Self
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from doculens.domain.prompting import SYSTEM_INSTRUCTIONS
 from doculens.domain.retrieval import RetrievalStrategy
 
 DATABASE_URL_SCHEME = "postgresql+asyncpg"
@@ -58,6 +59,13 @@ class StorageEncryption(StrEnum):
 
 class EmbeddingProviderKind(StrEnum):
     """Provider selected by ``EMBEDDING_PROVIDER`` (§15, §73; vendor choice is OQ-17)."""
+
+    FAKE = "fake"
+    OPENAI = "openai"
+
+
+class LLMProviderKind(StrEnum):
+    """Provider selected by ``LLM_PROVIDER`` (§21, §73; the vendor choice is OQ-17)."""
 
     FAKE = "fake"
     OPENAI = "openai"
@@ -200,6 +208,24 @@ class CoreSettings(BaseSettings):
     embedding_max_input_characters: int = Field(default=32_000, ge=1, le=1_000_000)
     embedding_max_concurrency: int = Field(default=4, ge=1, le=64)
 
+    llm_provider: LLMProviderKind = Field(
+        default=LLMProviderKind.FAKE,
+        description="fake (local development and tests) or openai (OpenAI-compatible chat API).",
+    )
+    llm_model: str = Field(default="gpt-4o-mini", min_length=1, max_length=200)
+    llm_api_base_url: str = Field(
+        default="https://api.openai.com/v1",
+        description="OpenAI-compatible base URL (OpenAI, Azure, Ollama, vLLM).",
+    )
+    llm_api_key: SecretStr | None = None
+    llm_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
+    llm_max_attempts: int = Field(default=3, ge=1, le=10)
+    llm_backoff_base_seconds: float = Field(default=1.0, ge=0, le=60)
+    llm_backoff_max_seconds: float = Field(default=10.0, ge=0, le=300)
+    llm_max_output_tokens: int = Field(default=1024, ge=1, le=32_768)
+    llm_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    llm_max_input_characters: int = Field(default=200_000, ge=1, le=10_000_000)
+
     vector_store: VectorStoreKind = Field(
         default=VectorStoreKind.CHROMA,
         description="chroma (the required store, §16) or memory (unit tests only).",
@@ -260,6 +286,22 @@ class CoreSettings(BaseSettings):
     context_max_chunks_per_document: int = Field(
         default=3, ge=1, le=100, description="Source diversity across documents (§20)."
     )
+    prompt_max_history_messages: int = Field(
+        default=10, ge=0, le=200, description="Earlier turns carried into the prompt (§25)."
+    )
+    prompt_max_history_characters: int = Field(default=8_000, ge=0, le=1_000_000)
+    query_rewriting: bool = Field(
+        default=True,
+        description="Rewrite follow-up questions into standalone queries with the LLM (§26).",
+    )
+    query_rewrite_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    generation_timeout_seconds: float = Field(
+        default=90.0,
+        gt=0,
+        le=600,
+        description="Wall-clock budget for the answer's model call, retries included.",
+    )
+    citation_max_quote_characters: int = Field(default=500, ge=1, le=10_000)
 
     storage_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     storage_read_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -326,6 +368,12 @@ class CoreSettings(BaseSettings):
             problems.append("EMBEDDING_API_BASE_URL must start with http:// or https://")
         if "@" in self.embedding_api_base_url.split("://", 1)[-1].split("/", 1)[0]:
             problems.append("EMBEDDING_API_BASE_URL must not embed credentials")
+        if not self.llm_api_base_url.startswith(ENDPOINT_SCHEMES):
+            problems.append("LLM_API_BASE_URL must start with http:// or https://")
+        if "@" in self.llm_api_base_url.split("://", 1)[-1].split("/", 1)[0]:
+            problems.append("LLM_API_BASE_URL must not embed credentials")
+        if self.llm_backoff_base_seconds > self.llm_backoff_max_seconds:
+            problems.append("LLM_BACKOFF_BASE_SECONDS must not exceed LLM_BACKOFF_MAX_SECONDS")
         if problems:
             message = "invalid processing configuration: " + "; ".join(problems)
             raise ValueError(message)
@@ -343,6 +391,18 @@ class CoreSettings(BaseSettings):
         if self.retrieval_max_query_characters > self.embedding_max_input_characters:
             problems.append(
                 "RETRIEVAL_MAX_QUERY_CHARACTERS must not exceed EMBEDDING_MAX_INPUT_CHARACTERS"
+            )
+        prompt_budget = (
+            len(SYSTEM_INSTRUCTIONS)
+            + self.context_max_characters
+            + self.prompt_max_history_characters
+            + self.retrieval_max_query_characters
+        )
+        if prompt_budget > self.llm_max_input_characters:
+            problems.append(
+                "the prompt budget (system policy + CONTEXT_MAX_CHARACTERS + "
+                "PROMPT_MAX_HISTORY_CHARACTERS + RETRIEVAL_MAX_QUERY_CHARACTERS) must not exceed "
+                "LLM_MAX_INPUT_CHARACTERS"
             )
         if problems:
             message = "invalid retrieval configuration: " + "; ".join(problems)
@@ -406,6 +466,10 @@ class CoreSettings(BaseSettings):
             problems.append("EMBEDDING_PROVIDER must not be fake (no real vectors, §15)")
         if not self.embedding_api_base_url.startswith("https://"):
             problems.append("EMBEDDING_API_BASE_URL must use https (encryption in transit, §53)")
+        if self.llm_provider is LLMProviderKind.FAKE:
+            problems.append("LLM_PROVIDER must not be fake (no real answers, §21)")
+        if not self.llm_api_base_url.startswith("https://"):
+            problems.append("LLM_API_BASE_URL must use https (encryption in transit, §53)")
         if self.reranker_provider is RerankerKind.FAKE:
             problems.append(
                 "RERANKER_PROVIDER must not be fake (use none until a vendor exists, §19)"

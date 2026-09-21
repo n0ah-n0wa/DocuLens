@@ -7,6 +7,7 @@ from doculens.infrastructure.config import (
     CoreSettings,
     EmbeddingProviderKind,
     Environment,
+    LLMProviderKind,
     StorageBackend,
     StorageEncryption,
 )
@@ -87,18 +88,20 @@ def test_incoherent_embedding_settings_are_rejected(
 
 def test_deployed_environments_refuse_the_fake_provider_and_plain_http() -> None:
     with pytest.raises(ValidationError, match="EMBEDDING_PROVIDER must not be fake"):
-        _settings(**DEPLOYED)
+        _settings(**DEPLOYED, llm_provider=LLMProviderKind.OPENAI)
 
     with pytest.raises(ValidationError, match="EMBEDDING_API_BASE_URL must use https"):
         _settings(
             **DEPLOYED,
             embedding_provider=EmbeddingProviderKind.OPENAI,
+            llm_provider=LLMProviderKind.OPENAI,
             embedding_api_base_url="http://internal/v1",
         )
 
     settings = _settings(
         **DEPLOYED,
         embedding_provider=EmbeddingProviderKind.OPENAI,
+        llm_provider=LLMProviderKind.OPENAI,
         embedding_api_key=SecretStr("sk-production"),
     )
     assert settings.embedding_provider is EmbeddingProviderKind.OPENAI
