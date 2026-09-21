@@ -273,7 +273,22 @@ deterministic fake provider for local development and CI; provider selection is 
 The `VectorStore` port ([ADR-002](decisions/ADR-002-vector-database.md)) with the ChromaDB
 adapter: chunk-derived vector ids, the §16 metadata plus model provenance, one collection per
 embedding model, owner-scoped search, delete and re-index enforced inside the adapter, and an
-in-memory store for unit tests. Nothing calls either from the pipeline yet.
+in-memory store for unit tests. The indexing stages of the ingestion pipeline write through both.
+
+**Implemented** (§17, §18, §20, §27, [ADR-016](decisions/ADR-016-retrieval-service.md)): the
+retrieval service behind the `RagService` boundary, one component per §17 stage: query
+preprocessing (deterministic normalisation, bounded length), metadata filtering (the §27 scope
+resolved to the owner's `READY` documents and passed to the store as an exact id filter), the
+`Retriever` port with semantic (query embedding plus owner-scoped vector search), keyword
+(PostgreSQL full-text search through the repository port) and hybrid (reciprocal-rank fusion of
+both) implementations selected by `RETRIEVAL_STRATEGY`,
+candidate selection (threshold, staleness against the chunk rows, duplicate removal, deterministic
+ranking), optional reranking behind the `RerankerProvider` port (top-N candidates in, top-k
+evidence out, bounded by a timeout and falling back to the retrieval order when the provider is
+disabled or unavailable) and context assembly (chunk and character budgets, per-document slots for source
+diversity, numbered items). Evidence is structured (`document_id`, `chunk_id`, `page_number`,
+text, score, metadata) and its text is read from PostgreSQL, never from the vector copy. A hosted
+reranking adapter, answer generation and citations are not implemented.
 
 **Planned** (§16–§27, §37–§39, §44, §74). The pipeline and its guarantees are fixed by the
 specification; the diagram includes the controls that wrap it.
@@ -320,7 +335,8 @@ flowchart LR
 
 - `OQ-17` — which LLM, embedding and reranker providers are used (and therefore tokenizer and
   pricing, `OQ-16`, `OQ-11`).
-- `OQ-4` — the keyword-retrieval backend for hybrid search.
+- `OQ-4` — a language-specific full-text configuration for keyword retrieval (provisionally
+  `simple`).
 - `OQ-8` — how a conversation's document scope is modelled.
 - `OQ-18` — how partial answers from a failed stream are persisted, and where the rewritten query
   is kept for auditability.
@@ -699,16 +715,16 @@ Trust boundaries fixed by the specification (§22, §53, §68):
 
 ## 16. Status summary
 
-| Area                      | Implemented                                                                                                                                                                | Planned                                                                       | Pending decisions                             |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------- |
-| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots                                                                 | ports, adapters                                                               | —                                             |
-| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                                                                                  | text rendering, versioned routes                                              | OQ-3, OQ-3b, OQ-10, OQ-19                     |
-| Ingestion                 | intake validation, isolated PyMuPDF extraction, page persistence, semantic chunking, embedding and ChromaDB indexing to READY (ADR-002/003/004/015), CAS state transitions | upload endpoint, deletion, reprocess and re-index endpoints, staleness checks | OQ-3, OQ-5, OQ-7                              |
-| RAG                       | embedding provider port and adapters (ADR-004), vector store port and ChromaDB adapter with tenant isolation (ADR-002)                                                     | indexing stage, retrieval, §17–§27 components, quotas, usage ledger           | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
-| Async processing          | worker deployable                                                                                                                                                          | queue, guarded transitions, retries, DLQ                                      | OQ-2, OQ-27 (ADR-011)                         |
-| Persistence               | §7 schema, Alembic migration, repositories, unit of work, DB probe, object storage port with S3 and filesystem adapters (ADR-014)                                          | usage ledger, consistency model                                               | OQ-7, OQ-8, OQ-18, OQ-28 (ADR-012)            |
-| Authentication            | §8 registration, login, atomic refresh rotation, logout, Argon2id, JWT claims, auth rate limiting, audit events                                                            | Redis limiter store                                                           | OQ-12, OQ-19, OQ-24                           |
-| Authorization             | §9 ownership on collections, documents, conversations, messages, citations                                                                                                 | vector and object-store scoping                                               | —                                             |
-| AWS                       | Terraform roots                                                                                                                                                            | §57 modules, VPC egress, OIDC                                                 | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28  |
-| CI/CD                     | CI pipeline                                                                                                                                                                | integration job, CD pipeline                                                  | —                                             |
-| Observability             | structured JSON logs, request correlation, access log                                                                                                                      | metrics, tracing, queue correlation, DLQ alarms                               | OQ-21                                         |
+| Area                      | Implemented                                                                                                                                                                                                                                        | Planned                                                                       | Pending decisions                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots                                                                                                                                         | ports, adapters                                                               | —                                                        |
+| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                                                                                                                                                          | text rendering, versioned routes                                              | OQ-3, OQ-3b, OQ-10, OQ-19                                |
+| Ingestion                 | intake validation, isolated PyMuPDF extraction, page persistence, semantic chunking, embedding and ChromaDB indexing to READY (ADR-002/003/004/015), CAS state transitions                                                                         | upload endpoint, deletion, reprocess and re-index endpoints, staleness checks | OQ-3, OQ-5, OQ-7                                         |
+| RAG                       | embedding provider port and adapters (ADR-004), vector store port and ChromaDB adapter with tenant isolation (ADR-002), retrieval service and RAG boundary with semantic, keyword and hybrid strategies and the optional reranking stage (ADR-016) | hosted reranker adapter, question answering, citations, quotas, usage ledger  | OQ-4 (language), OQ-8, OQ-17, OQ-18, OQ-22, OQ-29, OQ-30 |
+| Async processing          | worker deployable                                                                                                                                                                                                                                  | queue, guarded transitions, retries, DLQ                                      | OQ-2, OQ-27 (ADR-011)                                    |
+| Persistence               | §7 schema, Alembic migration, repositories, unit of work, DB probe, object storage port with S3 and filesystem adapters (ADR-014)                                                                                                                  | usage ledger, consistency model                                               | OQ-7, OQ-8, OQ-18, OQ-28 (ADR-012)                       |
+| Authentication            | §8 registration, login, atomic refresh rotation, logout, Argon2id, JWT claims, auth rate limiting, audit events                                                                                                                                    | Redis limiter store                                                           | OQ-12, OQ-19, OQ-24                                      |
+| Authorization             | §9 ownership on collections, documents, conversations, messages, citations                                                                                                                                                                         | vector and object-store scoping                                               | —                                                        |
+| AWS                       | Terraform roots                                                                                                                                                                                                                                    | §57 modules, VPC egress, OIDC                                                 | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28             |
+| CI/CD                     | CI pipeline                                                                                                                                                                                                                                        | integration job, CD pipeline                                                  | —                                                        |
+| Observability             | structured JSON logs, request correlation, access log                                                                                                                                                                                              | metrics, tracing, queue correlation, DLQ alarms                               | OQ-21                                                    |

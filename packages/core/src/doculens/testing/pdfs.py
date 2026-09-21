@@ -1,5 +1,6 @@
 """PDF fixtures for tests, generated on the fly so no binary files live in the repository."""
 
+import textwrap
 from collections.abc import Mapping, Sequence
 from multiprocessing.connection import Connection
 
@@ -24,12 +25,21 @@ def pdf_with_pages(
     for text in texts:
         page = document.new_page()
         if text is not None:
-            page.insert_text((72, 72), text)
+            page.insert_text((72, 72), _wrapped(text))
     if metadata:
         document.set_metadata(dict(metadata))
     data: bytes = document.tobytes()
     document.close()
     return data
+
+
+def _wrapped(text: str, width: int = 88) -> str:
+    """``insert_text`` writes lines as given and the page clips what runs past its edge, so
+    long paragraphs are wrapped; explicit line breaks are kept."""
+    lines: list[str] = []
+    for line in text.split("\n"):
+        lines.extend(textwrap.wrap(line, width=width) or [""])
+    return "\n".join(lines)
 
 
 def encrypted_pdf(text: str = "confidential") -> bytes:

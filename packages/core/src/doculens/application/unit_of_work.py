@@ -18,7 +18,9 @@ from doculens.domain.auth import RefreshToken
 from doculens.domain.collections import Collection
 from doculens.domain.conversations import Citation, Conversation, Message
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
+from doculens.domain.retrieval import ChunkMatch
 from doculens.domain.users import User
+from doculens.domain.vectors import SearchFilter
 
 
 class UserRepository(Protocol):
@@ -107,6 +109,21 @@ class DocumentContentRepository(Protocol):
 
     async def list_pages(self, owner_id: UUID, document_id: UUID) -> list[DocumentPage]: ...
     async def list_chunks(self, owner_id: UUID, document_id: UUID) -> list[DocumentChunk]: ...
+    async def search_chunks(
+        self, query: str, *, scope: SearchFilter, limit: int
+    ) -> list[ChunkMatch]:
+        """Keyword retrieval (§18) over the chunks of the scope's owner, best first.
+
+        A chunk matches when it contains any of the query's ``keyword_terms``; the search
+        engine behind it (full-text search in PostgreSQL) never crosses this port.
+        """
+        ...
+
+    async def get_chunks(self, owner_id: UUID, chunk_ids: Sequence[UUID]) -> list[DocumentChunk]:
+        """The owner's chunks among ``chunk_ids`` (retrieval evidence, §17); unknown or
+        foreign ids are simply absent, so the caller can only ever read its own text."""
+        ...
+
     async def delete_content(self, document_id: UUID) -> None: ...
 
 

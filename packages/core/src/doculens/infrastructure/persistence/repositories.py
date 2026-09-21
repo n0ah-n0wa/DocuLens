@@ -10,7 +10,9 @@ from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import CursorResult, Table, delete, func, select, update
+from sqlalchemy import CursorResult, Table, Text, delete, func, select, update
+from sqlalchemy import cast as sql_cast
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +23,9 @@ from doculens.domain.conversations import Citation, Conversation, Message
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
 from doculens.domain.errors import ConflictError, NotFoundError
 from doculens.domain.ingestion import DuplicateDocumentError
+from doculens.domain.retrieval import ChunkMatch, keyword_terms
 from doculens.domain.users import User
+from doculens.domain.vectors import SearchFilter
 from doculens.infrastructure.persistence import mappers
 from doculens.infrastructure.persistence.models import (
     CitationModel,
@@ -304,6 +308,55 @@ class SqlAlchemyDocumentContentRepository:
             .join(DocumentModel, DocumentModel.id == DocumentChunkModel.document_id)
             .where(DocumentModel.owner_id == owner_id, DocumentModel.id == document_id)
             .order_by(DocumentChunkModel.chunk_index)
+        )
+        return [mappers.chunk_to_domain(row) for row in rows]
+
+    async def search_chunks(
+        self, query: str, *, scope: SearchFilter, limit: int
+    ) -> list[ChunkMatch]:
+        # PostgreSQL full-text search (OQ-4): the "simple" configuration is language-agnostic and
+        # stemming-free and the terms are OR-ed; the match expression is the one the GIN index
+        # on document_chunks was built with (migration 0004). Terms are plain words, so the
+        # query string can never carry tsquery syntax. A chunk ranks by how many distinct query
+        # terms it contains (a common word repeated five times must not beat three different
+        # terms), with cover density as the tie-break, normalised into [0, 1).
+        terms = keyword_terms(query)
+        if not terms or limit < 1:
+            return []
+        tsquery = func.to_tsquery("simple", " | ".join(terms))
+        vector = func.to_tsvector("simple", DocumentChunkModel.text)
+        term = func.unnest(sql_cast(list(terms), ARRAY(Text))).column_valued("term")
+        matched = (
+            select(func.count())
+            .where(vector.op("@@")(func.to_tsquery("simple", term)))
+            .scalar_subquery()
+        )
+        rank = matched + func.ts_rank_cd(vector, tsquery, 32)
+        statement = (
+            select(DocumentChunkModel, rank)
+            .join(DocumentModel, DocumentModel.id == DocumentChunkModel.document_id)
+            .where(DocumentModel.owner_id == scope.owner_id, vector.op("@@")(tsquery))
+        )
+        if scope.document_ids is not None:
+            statement = statement.where(DocumentModel.id.in_(list(scope.document_ids)))
+        if scope.collection_id is not None:
+            statement = statement.where(DocumentModel.collection_id == scope.collection_id)
+        rows = await self._session.execute(
+            statement.order_by(rank.desc(), DocumentChunkModel.id).limit(limit)
+        )
+        return [
+            ChunkMatch(chunk=mappers.chunk_to_domain(row), score=float(score))
+            for row, score in rows.tuples()
+        ]
+
+    async def get_chunks(self, owner_id: UUID, chunk_ids: Sequence[UUID]) -> list[DocumentChunk]:
+        if not chunk_ids:
+            return []
+        rows = await self._session.scalars(
+            select(DocumentChunkModel)
+            .join(DocumentModel, DocumentModel.id == DocumentChunkModel.document_id)
+            .where(DocumentModel.owner_id == owner_id, DocumentChunkModel.id.in_(list(chunk_ids)))
+            .order_by(DocumentChunkModel.document_id, DocumentChunkModel.chunk_index)
         )
         return [mappers.chunk_to_domain(row) for row in rows]
 

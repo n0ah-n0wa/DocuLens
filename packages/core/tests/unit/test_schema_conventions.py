@@ -9,7 +9,8 @@ pytestmark = pytest.mark.unit
 
 
 def _leading_indexed_columns(table: Table) -> set[str]:
-    leading = {next(iter(index.columns)).name for index in table.indexes}
+    # Expression indexes (full-text search) have no columns and index no foreign key.
+    leading = {next(iter(index.columns)).name for index in table.indexes if index.columns}
     for constraint in table.constraints:
         if isinstance(constraint, UniqueConstraint | PrimaryKeyConstraint) and constraint.columns:
             leading.add(next(iter(constraint.columns)).name)

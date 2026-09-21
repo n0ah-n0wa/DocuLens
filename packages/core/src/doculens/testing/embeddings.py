@@ -7,8 +7,9 @@ and failures can be scripted so use cases can be tested against provider behavio
 
 import hashlib
 import math
+import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from doculens.application.embeddings import EmbeddingLimits, batched, validate_inputs
 from doculens.domain.embeddings import EmbeddingResult, EmbeddingUsage, Vector
@@ -29,6 +30,33 @@ def hashed_vector(text: str, dimensions: int, *, salt: str = "") -> Vector:
     raw = values[:dimensions]
     norm = math.sqrt(sum(value * value for value in raw)) or 1.0
     return tuple(value / norm for value in raw)
+
+
+_WORDS = re.compile(r"\w+")
+
+
+def word_weight(word: str) -> float:
+    """Longer words carry more meaning than short function words, in most languages; a crude,
+    corpus-free stand-in for inverse document frequency so that "in" and "the" do not
+    dominate the fakes."""
+    return min(len(word), 8) / 8
+
+
+def bag_of_words_vector(text: str, dimensions: int) -> Vector:
+    """A unit vector that is the weighted sum of the hashed vectors of the distinct words in
+    ``text`` (see :func:`word_weight`).
+
+    Texts sharing words are close and unrelated texts are near-orthogonal, so retrieval tests
+    can assert on ranking without a real model; still deterministic and meaning-free.
+    """
+    words = dict.fromkeys(_WORDS.findall(text.lower())) or {text: None}
+    summed = [0.0] * dimensions
+    for word in words:
+        weight = word_weight(word)
+        for position, value in enumerate(hashed_vector(word, dimensions)):
+            summed[position] += weight * value
+    norm = math.sqrt(sum(value * value for value in summed)) or 1.0
+    return tuple(value / norm for value in summed)
 
 
 @dataclass
@@ -84,3 +112,20 @@ class FakeEmbeddingProvider:
     def _maybe_fail(self) -> None:
         if self.failures:
             raise self.failures.pop(0)
+
+
+@dataclass
+class BagOfWordsEmbeddingProvider(FakeEmbeddingProvider):
+    """Documents and queries share one word-overlap space (see :func:`bag_of_words_vector`)."""
+
+    model_name: str = "fake-bag-of-words-v1"
+
+    async def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult:
+        result = await super().embed_documents(texts)
+        return replace(
+            result, vectors=tuple(bag_of_words_vector(text, self.dimensions) for text in texts)
+        )
+
+    async def embed_query(self, text: str) -> EmbeddingResult:
+        result = await super().embed_query(text)
+        return replace(result, vectors=(bag_of_words_vector(text, self.dimensions),))

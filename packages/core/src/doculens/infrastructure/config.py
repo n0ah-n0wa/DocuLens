@@ -15,6 +15,8 @@ from typing import Self
 from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from doculens.domain.retrieval import RetrievalStrategy
+
 DATABASE_URL_SCHEME = "postgresql+asyncpg"
 BUCKET_NAME_PATTERN = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
 AWS_ACCOUNT_ID_PATTERN = r"^[0-9]{12}$"
@@ -59,6 +61,13 @@ class EmbeddingProviderKind(StrEnum):
 
     FAKE = "fake"
     OPENAI = "openai"
+
+
+class RerankerKind(StrEnum):
+    """Provider selected by ``RERANKER_PROVIDER`` (§19, §73); the hosted vendor is OQ-17."""
+
+    NONE = "none"
+    FAKE = "fake"
 
 
 class VectorStoreKind(StrEnum):
@@ -209,6 +218,49 @@ class CoreSettings(BaseSettings):
         description="Chunks embedded and written per window; bounds worker memory (§53).",
     )
 
+    retrieval_strategy: RetrievalStrategy = Field(
+        default=RetrievalStrategy.HYBRID,
+        description="semantic (vectors), keyword (PostgreSQL full-text) or hybrid (both, fused).",
+    )
+    retrieval_max_query_characters: int = Field(
+        default=2_000, ge=1, le=100_000, description="Longest question accepted (§17)."
+    )
+    retrieval_candidates: int = Field(
+        default=20,
+        ge=1,
+        le=1_000,
+        description="Nearest vectors fetched per question before selection (§17, §19).",
+    )
+    retrieval_min_score: float = Field(
+        default=0.0,
+        ge=-1.0,
+        le=1.0,
+        description="Cosine similarity below which a hit is not evidence (OQ-29).",
+    )
+    retrieval_max_scope_documents: int = Field(
+        default=100, ge=1, le=10_000, description="Most documents selectable per question."
+    )
+    retrieval_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        le=300,
+        description="Wall-clock budget for embedding, vector and keyword search per question.",
+    )
+    reranker_provider: RerankerKind = Field(
+        default=RerankerKind.NONE,
+        description="none (reranking off) or fake (deterministic, local and tests).",
+    )
+    rerank_model: str = Field(default="", max_length=200)
+    rerank_top_k: int = Field(
+        default=5, ge=1, le=100, description="Evidence kept after reranking (§19)."
+    )
+    rerank_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    context_max_chunks: int = Field(default=5, ge=1, le=100)
+    context_max_characters: int = Field(default=12_000, ge=1, le=1_000_000)
+    context_max_chunks_per_document: int = Field(
+        default=3, ge=1, le=100, description="Source diversity across documents (§20)."
+    )
+
     storage_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     storage_read_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     storage_max_attempts: int = Field(default=3, ge=1, le=10)
@@ -279,6 +331,24 @@ class CoreSettings(BaseSettings):
             raise ValueError(message)
         return self
 
+    @model_validator(mode="after")
+    def _validate_retrieval(self) -> Self:
+        problems: list[str] = []
+        if self.retrieval_candidates > self.vector_search_max_results:
+            problems.append("RETRIEVAL_CANDIDATES must not exceed VECTOR_SEARCH_MAX_RESULTS")
+        if self.context_max_chunks > self.retrieval_candidates:
+            problems.append("CONTEXT_MAX_CHUNKS must not exceed RETRIEVAL_CANDIDATES")
+        if self.rerank_top_k > self.retrieval_candidates:
+            problems.append("RERANK_TOP_K must not exceed RETRIEVAL_CANDIDATES")
+        if self.retrieval_max_query_characters > self.embedding_max_input_characters:
+            problems.append(
+                "RETRIEVAL_MAX_QUERY_CHARACTERS must not exceed EMBEDDING_MAX_INPUT_CHARACTERS"
+            )
+        if problems:
+            message = "invalid retrieval configuration: " + "; ".join(problems)
+            raise ValueError(message)
+        return self
+
     @property
     def is_deployed(self) -> bool:
         """True for staging and production, where local-development conveniences are forbidden."""
@@ -336,6 +406,10 @@ class CoreSettings(BaseSettings):
             problems.append("EMBEDDING_PROVIDER must not be fake (no real vectors, §15)")
         if not self.embedding_api_base_url.startswith("https://"):
             problems.append("EMBEDDING_API_BASE_URL must use https (encryption in transit, §53)")
+        if self.reranker_provider is RerankerKind.FAKE:
+            problems.append(
+                "RERANKER_PROVIDER must not be fake (use none until a vendor exists, §19)"
+            )
         return problems
 
 

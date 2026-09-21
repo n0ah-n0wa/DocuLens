@@ -210,6 +210,12 @@ class DocumentChunkModel(Base):
     __table_args__ = (
         UniqueConstraint("document_id", "chunk_index"),
         Index(None, "page_id"),
+        # Keyword retrieval (§18, OQ-4): full-text search over chunk text, language-agnostic.
+        Index(
+            "ix_document_chunks_text_search",
+            sql_text("to_tsvector('simple'::regconfig, text)"),
+            postgresql_using="gin",
+        ),
         CheckConstraint("chunk_index >= 0", name="chunk_index_non_negative"),
         CheckConstraint("token_count >= 0", name="token_count_non_negative"),
     )

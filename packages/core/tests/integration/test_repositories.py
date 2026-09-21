@@ -199,6 +199,11 @@ async def test_pages_and_chunks_are_stored_and_listed_in_order(
         listed = await uow.document_content.list_chunks(owner.id, document.id)
         assert [chunk.chunk_index for chunk in listed] == [0, 1]
         assert listed[0].metadata == {"embedding_model": "fake"}
+        by_id = await uow.document_content.get_chunks(
+            owner.id, [chunks[0].id, new_id(), chunks[1].id, chunks[0].id]
+        )
+        assert [chunk.id for chunk in by_id] == [listed[0].id, listed[1].id]
+        assert await uow.document_content.get_chunks(owner.id, []) == []
 
         await uow.document_content.delete_content(document.id)
         await uow.commit()
@@ -314,6 +319,15 @@ async def test_messages_and_content_are_invisible_to_other_owners(
         character_count=7,
         metadata={},
     )
+    chunk = DocumentChunk(
+        id=new_id(),
+        document_id=document.id,
+        page_id=page.id,
+        chunk_index=0,
+        text="private",
+        token_count=1,
+        metadata={},
+    )
     message = Message(
         id=new_id(),
         conversation_id=conversation.id,
@@ -333,6 +347,7 @@ async def test_messages_and_content_are_invisible_to_other_owners(
         await uow.users.add(other)
         await uow.documents.add(document)
         await uow.document_content.add_pages([page])
+        await uow.document_content.add_chunks([chunk])
         await uow.conversations.add(conversation)
         await uow.messages.add(owner.id, message)
         await uow.commit()
@@ -340,6 +355,10 @@ async def test_messages_and_content_are_invisible_to_other_owners(
     async with database.unit_of_work() as uow:
         assert await uow.document_content.list_pages(other.id, document.id) == []
         assert await uow.document_content.list_chunks(other.id, document.id) == []
+        assert await uow.document_content.get_chunks(other.id, [chunk.id]) == []
+        assert [c.id for c in await uow.document_content.get_chunks(owner.id, [chunk.id])] == [
+            chunk.id
+        ]
         assert await uow.messages.list_for_conversation(other.id, conversation.id) == []
         assert await uow.messages.list_citations_for_conversation(other.id, conversation.id) == {}
         with pytest.raises(NotFoundError):

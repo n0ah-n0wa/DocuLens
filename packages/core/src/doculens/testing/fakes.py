@@ -19,7 +19,9 @@ from doculens.domain.conversations import Citation, Conversation, Message
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
 from doculens.domain.errors import ConflictError, NotFoundError
 from doculens.domain.ingestion import DuplicateDocumentError
+from doculens.domain.retrieval import ChunkMatch, keyword_terms, words_of
 from doculens.domain.users import User
+from doculens.domain.vectors import SearchFilter
 
 
 class InMemoryStore:
@@ -218,6 +220,37 @@ class InMemoryDocumentContentRepository:
             return []
         chunks = [c for c in self._store.chunks.values() if c.document_id == document_id]
         return sorted(chunks, key=lambda c: c.chunk_index)
+
+    async def search_chunks(
+        self, query: str, *, scope: SearchFilter, limit: int
+    ) -> list[ChunkMatch]:
+        """The number of distinct query terms present in the chunk, like the SQL adapter
+        (whose tie-break by occurrence density is not reproduced)."""
+        terms = keyword_terms(query)
+        matches: list[ChunkMatch] = []
+        for chunk in self._store.chunks.values():
+            document = self._store.documents.get(chunk.document_id)
+            if document is None or document.owner_id != scope.owner_id:
+                continue
+            if scope.document_ids is not None and document.id not in scope.document_ids:
+                continue
+            if scope.collection_id is not None and document.collection_id != scope.collection_id:
+                continue
+            words = set(words_of(chunk.text))
+            matched = sum(1 for term in terms if term in words)
+            if matched:
+                matches.append(ChunkMatch(chunk=chunk, score=float(matched)))
+        matches.sort(key=lambda match: (-match.score, match.chunk.id.hex))
+        return matches[: max(0, limit)]
+
+    async def get_chunks(self, owner_id: UUID, chunk_ids: Sequence[UUID]) -> list[DocumentChunk]:
+        wanted = set(chunk_ids)
+        chunks = [
+            c
+            for c in self._store.chunks.values()
+            if c.id in wanted and self._owned(owner_id, c.document_id)
+        ]
+        return sorted(chunks, key=lambda c: (c.document_id.hex, c.chunk_index))
 
     async def delete_content(self, document_id: UUID) -> None:
         for chunk_id, chunk in list(self._store.chunks.items()):

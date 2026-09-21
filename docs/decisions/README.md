@@ -43,7 +43,8 @@ that later readers understand why the system looks the way it does.
 | [ADR-013](ADR-013-authorization-responses.md)     | Resource authorization and not-found responses | Accepted               | —                                                |
 | [ADR-014](ADR-014-object-storage.md)              | Object storage adapters                        | Accepted               | OQ-13 resolved; OQ-3 still open                  |
 | [ADR-015](ADR-015-ingestion-pipeline.md)          | PDF ingestion pipeline                         | Accepted               | OQ-6, OQ-14 provisional; OQ-3 open               |
+| [ADR-016](ADR-016-retrieval-service.md)           | Retrieval, reranking and the RAG boundary      | Accepted               | OQ-4 provisional; OQ-8, OQ-17 open; OQ-29 partly |
 
 Decisions that only affect ingestion behaviour (OQ-3, OQ-5, OQ-6, OQ-7, OQ-14), the conversation
-model (OQ-8, OQ-18), the RAG mechanisms (OQ-29, OQ-30) or observability (OQ-21) are recorded as
-new ADRs (013 onwards) when taken.
+model (OQ-8, OQ-18), the remaining RAG mechanisms (OQ-30) or observability (OQ-21) are
+recorded as new ADRs (013 onwards) when taken.
