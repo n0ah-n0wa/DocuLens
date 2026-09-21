@@ -123,6 +123,7 @@ def build_answer_service(
         limits=AnswerLimits(
             max_quote_characters=settings.citation_max_quote_characters,
             max_history_messages=settings.prompt_max_history_messages,
+            max_history_characters=settings.prompt_max_history_characters,
             generation_timeout_seconds=settings.generation_timeout_seconds,
         ),
     )

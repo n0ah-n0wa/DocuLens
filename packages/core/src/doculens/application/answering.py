@@ -44,12 +44,14 @@ from doculens.domain.answering import (
     AnswerUsage,
     GenerationTimeoutError,
     RetrievalMetadata,
+    RewriteVerdict,
     accept_rewrite,
     build_citations,
     build_rewrite_messages,
     clean_references,
     detect_violation,
     is_insufficient,
+    normalise_text,
 )
 from doculens.domain.common import clean_label
 from doculens.domain.conversations import (
@@ -75,6 +77,7 @@ class Rewrite:
     applied: bool
     usage: LLMUsage
     latency_ms: int
+    reason: str = "no_history"  # why the question was or was not rewritten
 
 
 class QueryRewriter(Protocol):
@@ -86,7 +89,7 @@ class QueryRewriter(Protocol):
 class NoQueryRewriting:
     async def rewrite(self, question: str, history: Sequence[ChatMessage]) -> Rewrite:
         del history
-        return Rewrite(query=question, applied=False, usage=LLMUsage(), latency_ms=0)
+        return Rewrite(question, applied=False, usage=LLMUsage(), latency_ms=0, reason="disabled")
 
 
 class LLMQueryRewriter:
@@ -106,7 +109,7 @@ class LLMQueryRewriter:
             return Rewrite(query=question, applied=False, usage=LLMUsage(), latency_ms=0)
         started = time.perf_counter()
         usage = LLMUsage()
-        candidate: str | None = None
+        verdict = RewriteVerdict(None, "provider_failure")
         try:
             async with asyncio.timeout(self._timeout_seconds):
                 generation = await self._llm.generate(
@@ -114,8 +117,11 @@ class LLMQueryRewriter:
                     options=GenerationOptions(max_output_tokens=256, temperature=0.0),
                 )
             usage = generation.usage
-            candidate = accept_rewrite(
-                generation.text, question, max_characters=self._max_characters
+            verdict = accept_rewrite(
+                generation.text,
+                question,
+                max_characters=self._max_characters,
+                history=history,
             )
         except (TimeoutError, LLMError, DependencyUnavailableError, InvalidInputError) as exc:
             # Provider trouble, a slow provider or a prompt the provider refuses (for example a
@@ -130,19 +136,36 @@ class LLMQueryRewriter:
                 extra={"operation": "answer.rewrite_skipped", "error_code": code},
             )
         latency = int((time.perf_counter() - started) * 1000)
-        if candidate is None or candidate == question:
-            return Rewrite(query=question, applied=False, usage=usage, latency_ms=latency)
-        return Rewrite(query=candidate, applied=True, usage=usage, latency_ms=latency)
+        if verdict.text is None:
+            logger.info(
+                "query rewrite not used",
+                extra={"operation": "answer.rewrite_rejected", "reason": verdict.reason},
+            )
+            return Rewrite(
+                question, applied=False, usage=usage, latency_ms=latency, reason=verdict.reason
+            )
+        if normalise_text(verdict.text).lower() == normalise_text(question).lower():
+            return Rewrite(
+                question, applied=False, usage=usage, latency_ms=latency, reason="unchanged"
+            )
+        return Rewrite(
+            verdict.text, applied=True, usage=usage, latency_ms=latency, reason="accepted"
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class AnswerLimits:
     max_quote_characters: int = 500
     max_history_messages: int = 10  # turns handed to the rewriter and the prompt builder
+    max_history_characters: int = 8_000  # and their total size, newest kept
     generation_timeout_seconds: float = 90.0  # wall-clock budget for the answer's model call
 
     def __post_init__(self) -> None:
-        if self.max_quote_characters < 1 or self.max_history_messages < 0:
+        if (
+            self.max_quote_characters < 1
+            or self.max_history_messages < 0
+            or self.max_history_characters < 0
+        ):
             message = "answer limits must be positive"
             raise ValueError(message)
         if not self.generation_timeout_seconds > 0:
@@ -155,6 +178,7 @@ class _ConversationState:
     conversation: Conversation
     is_new: bool
     history: tuple[ChatMessage, ...]
+    last_message_at: datetime | None = None  # the newest persisted turn, for ordering
 
 
 class AnswerService:
@@ -261,8 +285,8 @@ class AnswerService:
             answer=answer_text,
             citations=citations,
             conversation_id=state.conversation.id,
-            user_message_id=user_message.id,
-            assistant_message_id=assistant_message.id,
+            user_message=user_message,
+            assistant_message=assistant_message,
             retrieval=RetrievalMetadata(
                 question=question,
                 query=rewrite.query,
@@ -338,16 +362,24 @@ class AnswerService:
             existing = await uow.conversations.get(owner_id, conversation_id)
             if existing is None:
                 raise ConversationNotFoundError
-            messages = await uow.messages.list_for_conversation(owner_id, conversation_id)
+            # Only the newest turns are read: a conversation's length never grows the cost of
+            # a question. One extra row is fetched so the ordering guard below always sees the
+            # newest message even when no history is carried.
+            messages = await uow.messages.list_for_conversation(
+                owner_id, conversation_id, limit=self._limits.max_history_messages + 1
+            )
         turns = [
             ChatMessage(message.role, message.content)
             for message in messages
             if message.role is not MessageRole.SYSTEM and message.content.strip()
         ]
-        recent = (
-            turns[-self._limits.max_history_messages :] if self._limits.max_history_messages else []
+        recent = _bounded_history(
+            turns, self._limits.max_history_messages, self._limits.max_history_characters
         )
-        return _ConversationState(existing, is_new=False, history=tuple(recent))
+        last_at = max((message.created_at for message in messages), default=None)
+        return _ConversationState(
+            existing, is_new=False, history=tuple(recent), last_message_at=last_at
+        )
 
     async def _persist(
         self,
@@ -358,7 +390,11 @@ class AnswerService:
         cited: Sequence[int],
         retrieval: RetrievalResult,
     ) -> tuple[Message, Message, tuple[Citation, ...]]:
+        # Strictly after the conversation's newest turn: repositories order messages by
+        # created_at, and a coarse clock could otherwise interleave two quick exchanges.
         now = self._clock()
+        if state.last_message_at is not None and now <= state.last_message_at:
+            now = state.last_message_at + timedelta(microseconds=1)
         user_message = Message(
             id=self._new_id(),
             conversation_id=state.conversation.id,
@@ -402,6 +438,22 @@ class AnswerService:
         if current is None:
             raise ConversationNotFoundError  # deleted while the answer was being produced
         await uow.conversations.update(replace(current, updated_at=updated_at))
+
+
+def _bounded_history(
+    turns: Sequence[ChatMessage], max_messages: int, max_characters: int
+) -> tuple[ChatMessage, ...]:
+    """The newest turns within both limits, oldest dropped first (the prompt builder applies
+    the same rule again, so the rewriter and the prompt see the same window)."""
+    kept: list[ChatMessage] = []
+    characters = 0
+    for turn in reversed(turns):
+        if len(kept) >= max_messages or characters + len(turn.content) > max_characters:
+            break
+        kept.append(turn)
+        characters += len(turn.content)
+    kept.reverse()
+    return tuple(kept)
 
 
 def _elapsed_ms(started: float) -> int:

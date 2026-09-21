@@ -17,6 +17,7 @@ from doculens.application.collections import CollectionService
 from doculens.application.conversations import ConversationService
 from doculens.application.documents import DocumentService
 from doculens.application.health import ReadinessService
+from doculens.application.rag import RagService
 from doculens.application.ratelimit import RateLimiter
 from doculens.application.storage import ObjectStorage, OwnerScopedObjectStorage
 from doculens.application.vectors import VectorStore
@@ -41,6 +42,7 @@ class AppComponents:
     collections: CollectionService
     documents: DocumentService
     conversations: ConversationService
+    rag: RagService
     rate_limiter: RateLimiter
     object_storage: ObjectStorage
     vector_store: VectorStore
@@ -72,6 +74,10 @@ def get_document_service(request: Request) -> DocumentService:
 
 def get_conversation_service(request: Request) -> ConversationService:
     return components_of(request).conversations
+
+
+def get_rag_service(request: Request) -> RagService:
+    return components_of(request).rag
 
 
 def get_rate_limiter(request: Request) -> RateLimiter:
@@ -113,6 +119,7 @@ AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 CollectionServiceDep = Annotated[CollectionService, Depends(get_collection_service)]
 DocumentServiceDep = Annotated[DocumentService, Depends(get_document_service)]
 ConversationServiceDep = Annotated[ConversationService, Depends(get_conversation_service)]
+RagServiceDep = Annotated[RagService, Depends(get_rag_service)]
 RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
 OwnedObjectStorageDep = Annotated[OwnerScopedObjectStorage, Depends(get_owned_object_storage)]
 ClientAddressDep = Annotated[str, Depends(client_address)]

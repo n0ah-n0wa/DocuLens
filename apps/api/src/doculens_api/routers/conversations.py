@@ -1,7 +1,8 @@
-"""Conversations and their message history (SPECIFICATIONS.md §28, §33).
+"""Conversations and their message history (SPECIFICATIONS.md §21, §23, §28, §33).
 
-Posting a question (creating messages) is the RAG phase; citations are returned with each message
-so the client can render them separately from the answer text (§23).
+Posting a question to a conversation runs the answering pipeline and persists both turns; the
+citations are returned with each assistant message so the client can render them separately
+from the answer text (§23). Every route addresses the caller's own conversations only (§9).
 """
 
 from datetime import datetime
@@ -13,14 +14,17 @@ from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
 from doculens.application.conversations import MessageWithCitations
+from doculens.application.rag import RagQuery
+from doculens.domain.answering import AnswerOutcome, AnswerResult
 from doculens.domain.common import UNSET
 from doculens.domain.conversations import (
     MAX_CONVERSATION_TITLE_LENGTH,
     Citation,
     Conversation,
+    Message,
     MessageRole,
 )
-from doculens_api.dependencies import ConversationServiceDep, CurrentUserDep
+from doculens_api.dependencies import ConversationServiceDep, CurrentUserDep, RagServiceDep
 
 router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
 
@@ -80,12 +84,108 @@ class MessageResponse(BaseModel):
 
     @classmethod
     def from_message(cls, item: MessageWithCitations) -> Self:
+        return cls.of(item.message, item.citations)
+
+    @classmethod
+    def of(cls, message: Message, citations: list[Citation] | tuple[Citation, ...]) -> Self:
         return cls(
-            id=item.message.id,
-            role=item.message.role,
-            content=item.message.content,
-            created_at=item.message.created_at,
-            citations=[CitationResponse.from_citation(c) for c in item.citations],
+            id=message.id,
+            role=message.role,
+            content=message.content,
+            created_at=message.created_at,
+            citations=[CitationResponse.from_citation(c) for c in citations],
+        )
+
+
+class AskRequest(BaseModel):
+    """A question for the conversation; ``document_ids`` narrows retrieval to those documents
+    for this question only (§27), otherwise the conversation's collection or every document."""
+
+    question: str = Field(min_length=1, max_length=20_000)
+    document_ids: list[UUID] | None = Field(default=None, min_length=1, max_length=100)
+
+
+class RetrievalMetadataResponse(BaseModel):
+    query: str
+    rewritten: bool
+    retriever: str
+    documents_in_scope: int
+    hits: int
+    evidence: int
+    context_items: int
+    reranking: str
+    model: str | None
+    prompt_version: str | None
+    invalid_references: int
+    truncated: bool
+    uncited: bool
+
+
+class UsageResponse(BaseModel):
+    embedding_requests: int
+    embedding_tokens: int | None
+    llm_requests: int
+    input_tokens: int | None
+    output_tokens: int | None
+
+
+class TimingResponse(BaseModel):
+    rewrite_ms: int
+    retrieval_ms: int
+    generation_ms: int
+    persistence_ms: int
+    total_ms: int
+
+
+class AnswerResponse(BaseModel):
+    """Both persisted turns of the exchange plus what producing the answer involved (§21, §38)."""
+
+    conversation_id: UUID
+    outcome: AnswerOutcome
+    user_message: MessageResponse
+    assistant_message: MessageResponse
+    retrieval: RetrievalMetadataResponse
+    usage: UsageResponse
+    timing: TimingResponse
+
+    @classmethod
+    def from_result(cls, result: AnswerResult) -> Self:
+        retrieval = result.retrieval
+        usage = result.usage
+        return cls(
+            conversation_id=result.conversation_id,
+            outcome=result.outcome,
+            user_message=MessageResponse.of(result.user_message, ()),
+            assistant_message=MessageResponse.of(result.assistant_message, result.citations),
+            retrieval=RetrievalMetadataResponse(
+                query=retrieval.query,
+                rewritten=retrieval.rewritten,
+                retriever=retrieval.retriever,
+                documents_in_scope=retrieval.documents_in_scope,
+                hits=retrieval.hits,
+                evidence=retrieval.evidence,
+                context_items=retrieval.context_items,
+                reranking=retrieval.reranking.status.value,
+                model=retrieval.model,
+                prompt_version=retrieval.prompt_version,
+                invalid_references=retrieval.invalid_references,
+                truncated=result.truncated,
+                uncited=result.uncited,
+            ),
+            usage=UsageResponse(
+                embedding_requests=usage.embeddings.requests,
+                embedding_tokens=usage.embeddings.tokens,
+                llm_requests=usage.llm.requests,
+                input_tokens=usage.llm.input_tokens,
+                output_tokens=usage.llm.output_tokens,
+            ),
+            timing=TimingResponse(
+                rewrite_ms=result.timing.rewrite_ms,
+                retrieval_ms=result.timing.retrieval_ms,
+                generation_ms=result.timing.generation_ms,
+                persistence_ms=result.timing.persistence_ms,
+                total_ms=result.timing.total_ms,
+            ),
         )
 
 
@@ -156,6 +256,28 @@ async def delete_conversation(
 ) -> Response:
     await conversations.delete(user.id, conversation_id)
     return Response(status_code=HTTPStatus.NO_CONTENT)
+
+
+@router.post(
+    "/{conversation_id}/messages",
+    status_code=HTTPStatus.CREATED,
+    summary="Ask a question in the conversation and persist the grounded, cited answer",
+    responses={
+        **NOT_FOUND,
+        HTTPStatus.BAD_REQUEST: {"description": "The question or scope cannot be used."},
+        HTTPStatus.SERVICE_UNAVAILABLE: {
+            "description": "A provider did not answer in time; nothing was recorded, retry."
+        },
+    },
+)
+async def ask_question(
+    conversation_id: UUID, body: AskRequest, user: CurrentUserDep, rag: RagServiceDep
+) -> AnswerResponse:
+    result = await rag.answer(
+        RagQuery(owner_id=user.id, question=body.question, document_ids=body.document_ids),
+        conversation_id=conversation_id,
+    )
+    return AnswerResponse.from_result(result)
 
 
 @router.get(

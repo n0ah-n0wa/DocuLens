@@ -312,17 +312,24 @@ class InMemoryMessageRepository:
     ) -> None:
         if not self._owned(owner_id, message.conversation_id):
             raise NotFoundError
+        if message.id in self._store.messages:
+            raise ConflictError  # like the primary key would
         self._store.messages[message.id] = message
         for citation in citations:
             self._store.citations[citation.id] = citation
 
-    async def list_for_conversation(self, owner_id: UUID, conversation_id: UUID) -> list[Message]:
+    async def list_for_conversation(
+        self, owner_id: UUID, conversation_id: UUID, *, limit: int | None = None
+    ) -> list[Message]:
         if not self._owned(owner_id, conversation_id):
             return []
         messages = [
             m for m in self._store.messages.values() if m.conversation_id == conversation_id
         ]
-        return sorted(messages, key=lambda m: (m.created_at, m.id.hex))
+        ordered = sorted(messages, key=lambda m: (m.created_at, m.id.hex))
+        if limit is None:
+            return ordered
+        return ordered[-limit:] if limit > 0 else []
 
     async def list_citations_for_conversation(
         self, owner_id: UUID, conversation_id: UUID

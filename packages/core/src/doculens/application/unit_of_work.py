@@ -145,8 +145,11 @@ class MessageRepository(Protocol):
         ...
 
     async def list_for_conversation(
-        self, owner_id: UUID, conversation_id: UUID
-    ) -> list[Message]: ...
+        self, owner_id: UUID, conversation_id: UUID, *, limit: int | None = None
+    ) -> list[Message]:
+        """The conversation's messages oldest first; with ``limit``, only the newest ones."""
+        ...
+
     async def list_citations_for_conversation(
         self, owner_id: UUID, conversation_id: UUID
     ) -> dict[UUID, list[Citation]]:

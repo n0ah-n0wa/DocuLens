@@ -18,6 +18,7 @@ from doculens.application.reranking import RerankingStage
 from doculens.application.retrieval import RetrievalService, build_retriever
 from doculens.domain.answering import AnswerOutcome, GenerationTimeoutError
 from doculens.domain.conversations import ConversationNotFoundError, MessageRole
+from doculens.domain.errors import ConflictError
 from doculens.domain.llm import GenerationOptions, LLMProviderUnavailableError
 from doculens.domain.prompting import (
     INSUFFICIENT_EVIDENCE_STATEMENT,
@@ -388,3 +389,94 @@ async def test_uncited_answers_are_flagged_for_the_caller(world: World) -> None:
         result.answer == "Revenue grew in [2024] and costs stayed flat."
     )  # a year, not a reference
     assert result.retrieval.invalid_references == 0
+
+
+async def test_history_is_bounded_in_count_and_size_for_the_rewriter_and_the_prompt(
+    world: World,
+) -> None:
+    rewriter = LLMQueryRewriter(world.llm, max_characters=200, timeout_seconds=1)
+    service = world.service(
+        rewriter=rewriter,
+        limits=AnswerLimits(max_history_messages=4, max_history_characters=120),
+    )
+    first = await service.answer(world.owner.id, "What is the annual leave allowance?")
+    conversation = first.conversation_id
+    for question in ("How much remote work?", "What about tokens?", "And parental leave?"):
+        await service.answer(world.owner.id, question, conversation_id=conversation)
+    world.llm.calls.clear()
+
+    await service.answer(world.owner.id, "And for parents?", conversation_id=conversation)
+
+    rewrite_call, answer_call = world.llm.calls
+    carried = list(answer_call[1:-1])
+    assert len(carried) <= 4
+    assert sum(len(m.content) for m in carried) <= 120
+    assert carried[-1].role is MessageRole.ASSISTANT  # the newest turns, not the oldest
+    assert "What is the annual leave allowance?" not in rewrite_call[-1].content
+    assert "And parental leave?" in rewrite_call[-1].content
+
+
+async def test_the_ordering_guard_holds_even_when_no_history_is_carried(world: World) -> None:
+    service = world.service(limits=AnswerLimits(max_history_messages=0))
+    first = await service.answer(world.owner.id, "What is the annual leave allowance?")
+
+    second = await service.answer(
+        world.owner.id, "And for parents?", conversation_id=first.conversation_id
+    )
+
+    assert second.user_message.created_at > first.assistant_message.created_at
+    assert [m.role for m in world.llm.calls[-1]] == [MessageRole.SYSTEM, MessageRole.USER]
+
+
+async def test_concurrent_questions_in_one_conversation_keep_each_exchange_contiguous(
+    world: World,
+) -> None:
+    service = world.service()
+    first = await service.answer(world.owner.id, "What is the annual leave allowance?")
+    conversation = first.conversation_id
+
+    results = await asyncio.gather(
+        *(
+            service.answer(world.owner.id, f"Question {i}?", conversation_id=conversation)
+            for i in range(5)
+        )
+    )
+
+    history = sorted(
+        (m for m in world.store.messages.values() if m.conversation_id == conversation),
+        key=lambda m: (m.created_at, m.id.hex),
+    )
+    assert len(history) == 12
+    assert len({m.id for m in history}) == 12  # no duplicates
+    assert [m.role for m in history] == [MessageRole.USER, MessageRole.ASSISTANT] * 6
+    for result in results:
+        index = next(i for i, m in enumerate(history) if m.id == result.user_message_id)
+        assert history[index + 1].id == result.assistant_message_id
+    assert len({m.created_at for m in history}) == 12  # strictly ordered timestamps
+
+
+async def test_a_conversation_deleted_while_answering_is_reported_not_recorded(
+    world: World,
+) -> None:
+    first = await world.service().answer(world.owner.id, "What is the annual leave allowance?")
+
+    class DeletingLLM(FakeLLMProvider):
+        async def generate(self, messages, *, options=None):  # type: ignore[no-untyped-def]  # noqa: ANN001, ANN202
+            del world.store.conversations[first.conversation_id]
+            return await super().generate(messages, options=options)
+
+    world.llm = DeletingLLM()
+    with pytest.raises(ConversationNotFoundError):
+        await world.service().answer(
+            world.owner.id, "And for parents?", conversation_id=first.conversation_id
+        )
+
+    assert len(world.store.messages) == 2  # only the first exchange remains
+
+
+async def test_duplicate_message_identifiers_are_refused_by_the_store(world: World) -> None:
+    result = await world.service().answer(world.owner.id, "What is the annual leave allowance?")
+
+    async with world.unit_of_work() as uow:
+        with pytest.raises(ConflictError):
+            await uow.messages.add(world.owner.id, result.user_message)

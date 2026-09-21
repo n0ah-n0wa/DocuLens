@@ -19,11 +19,12 @@ from doculens.domain.answering import (
     is_insufficient,
     question_of_rewrite_prompt,
 )
-from doculens.domain.conversations import MessageRole
+from doculens.domain.conversations import Message, MessageRole
 from doculens.domain.llm import ChatMessage, FinishReason, LLMUsage
 from doculens.domain.prompting import INSUFFICIENT_EVIDENCE_STATEMENT
 from doculens.domain.reranking import RerankingReport, RerankingStatus
 from doculens.domain.retrieval import AssembledContext, ContextItem, Evidence
+from doculens.domain.time import utc_now
 
 pytestmark = pytest.mark.unit
 
@@ -134,7 +135,8 @@ def test_the_rewrite_prompt_carries_history_as_data_and_the_question_last() -> N
     [
         ("What is the parental leave allowance?", "What is the parental leave allowance?"),
         ('"What is the parental leave allowance?"', "What is the parental leave allowance?"),
-        ("  spaced   out  ", "spaced out"),
+        ("  what  is the   parental leave  allowance? ", "what is the parental leave allowance?"),
+        ("Which one of the Berlin offices?", None),  # invents a place
         ("", None),
         ("x" * 201, None),
         (INSUFFICIENT_EVIDENCE_STATEMENT, None),
@@ -142,7 +144,17 @@ def test_the_rewrite_prompt_carries_history_as_data_and_the_question_last() -> N
     ],
 )
 def test_rewrites_are_accepted_only_when_plausible(candidate: str, accepted: str | None) -> None:
-    assert accept_rewrite(candidate, "And for parents?", max_characters=200) == accepted
+    history = [ChatMessage(MessageRole.USER, "What is the annual leave allowance?")]
+    verdict = accept_rewrite(candidate, "And for parents?", max_characters=200, history=history)
+
+    assert verdict.text == accepted
+    assert verdict.accepted is (accepted is not None)
+
+
+def _message(role: MessageRole, content: str) -> Message:
+    return Message(
+        id=uuid4(), conversation_id=uuid4(), role=role, content=content, created_at=utc_now()
+    )
 
 
 def test_the_result_reports_grounding_and_truncation() -> None:
@@ -170,8 +182,8 @@ def test_the_result_reports_grounding_and_truncation() -> None:
             answer="a",
             citations=(),
             conversation_id=uuid4(),
-            user_message_id=uuid4(),
-            assistant_message_id=uuid4(),
+            user_message=_message(MessageRole.USER, "q"),
+            assistant_message=_message(MessageRole.ASSISTANT, "a"),
             retrieval=metadata(finish),
             usage=AnswerUsage(
                 generation=LLMUsage(requests=1, output_tokens=3),

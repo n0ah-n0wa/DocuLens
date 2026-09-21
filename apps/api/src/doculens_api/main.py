@@ -18,7 +18,9 @@ from doculens.application.auth import AuthConfig, AuthService
 from doculens.application.collections import CollectionService
 from doculens.application.conversations import ConversationService
 from doculens.application.documents import DocumentService
+from doculens.application.embeddings import EmbeddingProvider
 from doculens.application.health import HealthProbe, ReadinessService
+from doculens.application.llm import LLMProvider
 from doculens.application.ratelimit import RateLimiter
 from doculens.application.unit_of_work import UnitOfWorkFactory
 from doculens.domain.auth import PasswordPolicy
@@ -26,6 +28,7 @@ from doculens.domain.time import utc_now
 from doculens.infrastructure.config import load_settings
 from doculens.infrastructure.logging import configure_logging
 from doculens.infrastructure.persistence.database import Database, DatabaseProbe
+from doculens.infrastructure.rag import build_rag_service
 from doculens.infrastructure.ratelimit import InMemoryRateLimiter
 from doculens.infrastructure.security.passwords import Argon2PasswordHasher
 from doculens.infrastructure.security.tokens import JwtTokenCodec
@@ -57,13 +60,16 @@ def create_app(
     probes: Sequence[HealthProbe] | None = None,
     unit_of_work_factory: UnitOfWorkFactory | None = None,
     rate_limiter: RateLimiter | None = None,
+    llm_provider: LLMProvider | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
 ) -> FastAPI:
     """Build a fully wired application instance.
 
     ``settings`` defaults to the validated environment configuration. ``probes`` are the dependency
     checks exposed by ``/health/ready`` (``None`` means the real database). ``unit_of_work_factory``
     defaults to the PostgreSQL unit of work; tests may pass an in-memory one. ``rate_limiter``
-    defaults to the in-process limiter (§37) until the Redis adapter exists.
+    defaults to the in-process limiter (§37) until the Redis adapter exists. ``llm_provider``
+    and ``embedding_provider`` override the configured providers (tests script fakes).
     """
     resolved = settings if settings is not None else load_settings(ApiSettings)
     configure_logging(
@@ -110,6 +116,13 @@ def create_app(
         collections=CollectionService(unit_of_work=unit_of_work),
         documents=DocumentService(unit_of_work=unit_of_work, vectors=vector_store),
         conversations=ConversationService(unit_of_work=unit_of_work),
+        rag=build_rag_service(
+            resolved,
+            unit_of_work=unit_of_work,
+            embeddings=embedding_provider,
+            vectors=vector_store,
+            llm=llm_provider,
+        ),
         rate_limiter=rate_limiter if rate_limiter is not None else InMemoryRateLimiter(),
         object_storage=object_storage,
         vector_store=vector_store,

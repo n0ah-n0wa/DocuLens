@@ -273,6 +273,14 @@ references into citation rows, and persistence of the user and assistant message
 citations in one transaction. An empty context answers with the insufficient-evidence sentence
 without calling the model; a generation failure persists nothing.
 
+**Implemented** (§9, §28, §33): the conversation routes: create, list (most recently updated
+first), inspect, rename or move, delete (messages and citations go with it), list messages with
+their citations, and `POST /api/v1/conversations/{id}/messages`, which asks a question in the
+conversation (optionally scoped to selected documents) and returns both persisted turns with the
+citations, the retrieval, usage and timing metadata. Every route addresses the caller's own
+conversations only; unknown and foreign ids are indistinguishable. Timestamps come from a
+strictly increasing UTC clock so turns and listings keep their order under a coarse system clock.
+
 **Implemented** (§21, §22, [ADR-017](decisions/ADR-017-grounded-prompt.md)): the grounded
 prompt builder: a fixed, versioned system policy (evidence only, no unsupported claims, the exact
 insufficient-evidence sentence, `[index]` citations, document text is data), earlier turns as

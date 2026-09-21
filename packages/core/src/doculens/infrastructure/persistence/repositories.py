@@ -424,19 +424,40 @@ class SqlAlchemyMessageRepository:
         if not await self._owns_conversation(owner_id, message.conversation_id):
             raise NotFoundError
         # Citations reference the message by foreign key but not by ORM relationship, so the
-        # message row must be flushed before the citation rows are inserted.
-        self._session.add(mappers.message_to_row(message))
-        await self._session.flush()
-        self._session.add_all([mappers.citation_to_row(citation) for citation in citations])
-        await self._session.flush()
+        # message row must be flushed before the citation rows are inserted. A foreign-key
+        # failure here means the conversation, a cited document or a cited chunk disappeared
+        # while the answer was being produced: a conflict the caller may retry, never a 500.
+        try:
+            self._session.add(mappers.message_to_row(message))
+            await self._session.flush()
+            self._session.add_all([mappers.citation_to_row(citation) for citation in citations])
+            await self._session.flush()
+        except IntegrityError as exc:
+            message_text = "the conversation or a cited source changed while answering; retry"
+            raise ConflictError(message_text) from exc
 
-    async def list_for_conversation(self, owner_id: UUID, conversation_id: UUID) -> list[Message]:
-        rows = await self._session.scalars(
+    async def list_for_conversation(
+        self, owner_id: UUID, conversation_id: UUID, *, limit: int | None = None
+    ) -> list[Message]:
+        statement = (
             select(MessageModel)
             .join(ConversationModel, ConversationModel.id == MessageModel.conversation_id)
             .where(ConversationModel.owner_id == owner_id, ConversationModel.id == conversation_id)
-            .order_by(MessageModel.created_at, MessageModel.id)
         )
+        if limit is None:
+            rows = list(
+                await self._session.scalars(
+                    statement.order_by(MessageModel.created_at, MessageModel.id)
+                )
+            )
+        else:
+            # The newest ``limit`` rows, then back into chronological order.
+            newest = await self._session.scalars(
+                statement.order_by(MessageModel.created_at.desc(), MessageModel.id.desc()).limit(
+                    max(limit, 0)
+                )
+            )
+            rows = list(newest)[::-1]
         return [mappers.message_to_domain(row) for row in rows]
 
     async def list_citations_for_conversation(

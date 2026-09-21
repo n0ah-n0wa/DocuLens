@@ -95,6 +95,12 @@ def _requests(seed: Seed) -> list[tuple[str, str, dict[str, object] | None, str]
         ("PATCH", f"/api/v1/conversations/{v}", {"title": "Taken"}, "CONVERSATION_NOT_FOUND"),
         ("DELETE", f"/api/v1/conversations/{v}", None, "CONVERSATION_NOT_FOUND"),
         ("GET", f"/api/v1/conversations/{v}/messages", None, "CONVERSATION_NOT_FOUND"),
+        (
+            "POST",
+            f"/api/v1/conversations/{v}/messages",
+            {"question": "What are the risks?"},
+            "CONVERSATION_NOT_FOUND",
+        ),
     ]
 
 
@@ -103,12 +109,18 @@ def test_the_owner_can_reach_everything(client: TestClient, seed: Seed) -> None:
         if method == "DELETE":
             continue
         response = client.request(method, path, json=body, headers=seed.alice)
-        assert response.status_code == HTTPStatus.OK, (method, path, response.text)
+        assert response.status_code in (HTTPStatus.OK, HTTPStatus.CREATED), (
+            method,
+            path,
+            response.text,
+        )
 
     messages = client.get(
         f"/api/v1/conversations/{seed.conversation_id}/messages", headers=seed.alice
     ).json()
-    assert [m["id"] for m in messages] == [str(seed.message_id)]
+    # The seeded answer, then the question asked by the sweep and its answer.
+    assert messages[0]["id"] == str(seed.message_id)
+    assert [m["role"] for m in messages] == ["ASSISTANT", "USER", "ASSISTANT"]
     assert messages[0]["citations"][0]["document_id"] == str(seed.document_id)
 
 

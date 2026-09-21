@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from uuid import UUID
 
-from doculens.domain.conversations import Citation, MessageRole
+from doculens.domain.conversations import Citation, Message, MessageRole
 from doculens.domain.embeddings import EmbeddingUsage
 from doculens.domain.errors import DependencyUnavailableError
 from doculens.domain.llm import ChatMessage, FinishReason, LLMUsage
@@ -29,7 +29,7 @@ from doculens.domain.prompting import (
     SYSTEM_INSTRUCTIONS,
 )
 from doculens.domain.reranking import RerankingReport
-from doculens.domain.retrieval import AssembledContext
+from doculens.domain.retrieval import AssembledContext, words_of
 
 # A reference is one to three digits: context items never number more, and bracketed
 # figures such as [2024] stay part of the answer text.
@@ -146,8 +146,9 @@ def build_citations(
 REWRITE_PROMPT_VERSION = "rewrite-v1"
 REWRITE_INSTRUCTIONS = (
     "You rewrite the latest question of a conversation into a standalone search query.\n"
-    "- Resolve pronouns and references using the earlier turns.\n"
-    "- Keep the user's language, intent and every detail; add nothing that was not asked.\n"
+    "- Resolve pronouns and references (it, this one, they, the same) using the earlier turns.\n"
+    "- Keep the user's language, intent and every detail. Use only words from the question and\n"
+    "  the earlier turns; never add facts, names, numbers or assumptions.\n"
     "- If the question already stands on its own, return it unchanged.\n"
     "- Output only the rewritten question, on one line, without quotes or commentary.\n"
 )
@@ -179,15 +180,64 @@ def question_of_rewrite_prompt(messages: Sequence[ChatMessage]) -> str | None:
     return match.group(1) if match else None
 
 
-def accept_rewrite(candidate: str, original: str, *, max_characters: int) -> str | None:
-    """A rewrite is used only when it is a plausible standalone question: non-empty, one
-    line, bounded, and not an answer or a refusal in disguise."""
+MIN_CONTENT_WORD_LENGTH = 5  # shorter words are function words or too ambiguous to police
+_STEM_LENGTH = 4  # "risks" and "risk", "parents" and "parental" share a stem prefix
+
+
+@dataclass(frozen=True, slots=True)
+class RewriteVerdict:
+    """Whether a candidate rewrite may replace the question for retrieval, and why not."""
+
+    text: str | None
+    reason: str
+
+    @property
+    def accepted(self) -> bool:
+        return self.text is not None
+
+
+def accept_rewrite(
+    candidate: str,
+    original: str,
+    *,
+    max_characters: int,
+    history: Sequence[ChatMessage] = (),
+) -> RewriteVerdict:
+    """A rewrite is used only when it is a plausible standalone question that adds nothing.
+
+    Rejected: empty; more than one line (commentary or an answer); over the length budget or
+    far longer than the question (the model started answering); the insufficient-evidence
+    sentence (a refusal in disguise); and any content word that appears neither in the question
+    nor in the conversation, because a retrieval query must not introduce information the user
+    never gave (§26). Morphological variants (``risk`` / ``risks``) share a stem and are fine.
+    """
+    lines = [line for line in candidate.splitlines() if line.strip()]
+    if len(lines) > 1:
+        return RewriteVerdict(None, "multiline")
     text = normalise_text(candidate).strip("\"'")
-    if not text or len(text) > max_characters or is_insufficient(text):
-        return None
-    if len(text) > 4 * max(len(normalise_text(original)), 20):
-        return None  # far longer than the question it rewrites: the model started answering
-    return text
+    if not text:
+        return RewriteVerdict(None, "empty")
+    if len(text) > max_characters or len(text) > 4 * max(len(normalise_text(original)), 20):
+        return RewriteVerdict(None, "too_long")
+    if is_insufficient(text):
+        return RewriteVerdict(None, "refusal")
+    known = _stems(original)
+    for message in history:
+        known |= _stems(message.content)
+    invented = sorted(
+        {
+            word
+            for word in words_of(text)
+            if len(word) >= MIN_CONTENT_WORD_LENGTH and word[:_STEM_LENGTH] not in known
+        }
+    )
+    if invented:
+        return RewriteVerdict(None, "invents:" + ",".join(invented))
+    return RewriteVerdict(text, "accepted")
+
+
+def _stems(text: str) -> set[str]:
+    return {word[:_STEM_LENGTH] for word in words_of(text) if len(word) >= _STEM_LENGTH}
 
 
 # -- the structured result (§21, §38) -------------------------------------------------------------
@@ -240,11 +290,19 @@ class AnswerResult:
     answer: str
     citations: tuple[Citation, ...]
     conversation_id: UUID
-    user_message_id: UUID
-    assistant_message_id: UUID
+    user_message: Message
+    assistant_message: Message
     retrieval: RetrievalMetadata
     usage: AnswerUsage
     timing: AnswerTiming
+
+    @property
+    def user_message_id(self) -> UUID:
+        return self.user_message.id
+
+    @property
+    def assistant_message_id(self) -> UUID:
+        return self.assistant_message.id
 
     @property
     def grounded(self) -> bool:
@@ -263,6 +321,7 @@ class AnswerResult:
 
 __all__ = [
     "BLOCKED_ANSWER_STATEMENT",
+    "MIN_CONTENT_WORD_LENGTH",
     "REWRITE_INSTRUCTIONS",
     "REWRITE_PROMPT_VERSION",
     "AnswerOutcome",
@@ -272,6 +331,7 @@ __all__ = [
     "CleanedAnswer",
     "GenerationTimeoutError",
     "RetrievalMetadata",
+    "RewriteVerdict",
     "accept_rewrite",
     "build_citations",
     "build_rewrite_messages",
