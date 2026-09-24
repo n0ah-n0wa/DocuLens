@@ -276,6 +276,7 @@ class DocumentProcessor:
                 stages.append(ProcessingStatus.INDEXING)
                 document = await self._index(document, embedded)
         except _LostRaceError:
+            await self._discard_vectors_if_terminating(document_id)
             logger.info(
                 "document was moved by another worker",
                 extra={"operation": "ingestion.concurrent", "document_id": str(document_id)},
@@ -465,6 +466,7 @@ class DocumentProcessor:
         ]
         usage = EmbeddingUsage()
         for start in range(0, len(pending), self._index_window):
+            await self._require_still_indexable(document)
             window = pending[start : start + self._index_window]
             result = await self._embeddings.embed_documents([chunk.text for chunk in window])
             records = records_for_chunks(
@@ -476,7 +478,31 @@ class DocumentProcessor:
             )
             await self._vectors.upsert(document.owner_id, records)
             usage += result.usage
+        await self._require_still_indexable(document)
         return _Embedded(vector_ids, usage, embedded_now=len(pending))
+
+    async def _require_still_indexable(self, document: Document) -> None:
+        """Abort embedding when a concurrent delete (or other race) owns the row.
+
+        Upserts that already landed are purged when the document is terminating so the
+        delete saga cannot leave orphaned vectors behind.
+        """
+        async with self._unit_of_work() as uow:
+            current = await uow.documents.get_for_processing(document.id)
+        if current is None or current.is_deleted or current.is_deleting:
+            await self._vectors.delete_document(document.owner_id, document.id)
+            raise _LostRaceError
+        if current.processing_status not in (
+            ProcessingStatus.EMBEDDING,
+            ProcessingStatus.INDEXING,
+        ):
+            raise _LostRaceError
+
+    async def _discard_vectors_if_terminating(self, document_id: UUID) -> None:
+        async with self._unit_of_work() as uow:
+            current = await uow.documents.get_for_processing(document_id)
+        if current is not None and (current.is_deleting or current.is_deleted):
+            await self._vectors.delete_document(current.owner_id, current.id)
 
     def _is_current(self, existing: VectorMetadata | None, chunk: DocumentChunk) -> bool:
         """A stored vector is reused only for unchanged text under the same model and provider."""
@@ -516,6 +542,7 @@ class DocumentProcessor:
                 updated, expected_status=document.processing_status
             ):
                 await uow.rollback()
+                await self._discard_vectors_if_terminating(document.id)
                 raise _LostRaceError
             await uow.commit()
         logger.info(

@@ -113,8 +113,10 @@ def create_app(
             readiness_probes, timeout_seconds=resolved.health_probe_timeout_seconds
         ),
         auth=auth_service,
-        collections=CollectionService(unit_of_work=unit_of_work),
-        documents=DocumentService(unit_of_work=unit_of_work, vectors=vector_store),
+        collections=CollectionService(unit_of_work=unit_of_work, vectors=vector_store),
+        documents=DocumentService(
+            unit_of_work=unit_of_work, vectors=vector_store, storage=object_storage
+        ),
         conversations=ConversationService(unit_of_work=unit_of_work),
         rag=build_rag_service(
             resolved,

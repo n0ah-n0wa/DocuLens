@@ -983,12 +983,13 @@ Deleting a collection must not automatically delete its documents unless explici
 
 Deleting a document must remove:
 
-1. PostgreSQL metadata;
-2. S3 object;
-3. ChromaDB vectors;
-4. associated pages;
-5. associated chunks;
-6. citations where appropriate.
+1. S3 object;
+2. ChromaDB vectors;
+3. associated pages;
+4. associated chunks;
+5. citation chunk links (`chunk_id` set to null). Citation rows themselves are kept so messages stay immutable.
+
+The document row is retained as a `DELETED` tombstone (see the §7.3 state machine). It is invisible to list, search and inspect. A second delete of the same document is a no-op.
 
 Deletion must be idempotent.
 
@@ -1026,11 +1027,13 @@ POST   /api/v1/auth/logout
 GET    /api/v1/users/me
 
 GET    /api/v1/documents
+GET    /api/v1/documents?q=
 POST   /api/v1/documents
 GET    /api/v1/documents/{id}
 PATCH  /api/v1/documents/{id}
 DELETE /api/v1/documents/{id}
 POST   /api/v1/documents/{id}/reprocess
+POST   /api/v1/documents/{id}/reindex
 
 GET    /api/v1/collections
 POST   /api/v1/collections

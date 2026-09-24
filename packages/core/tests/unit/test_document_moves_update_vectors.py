@@ -1,17 +1,31 @@
 """Moving a document between collections keeps the vectors' collection metadata true (§16, §29)."""
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
 from doculens.application.documents import DocumentService
 from doculens.domain.chunking import chunk_id
-from doculens.domain.vectors import SearchFilter, VectorMetadata, VectorRecord, vector_id_for
+from doculens.domain.vectors import (
+    SearchFilter,
+    VectorMetadata,
+    VectorRecord,
+    VectorStoreUnavailableError,
+    vector_id_for,
+)
 from doculens.testing.factories import Factories
 from doculens.testing.fakes import InMemoryStore, InMemoryUnitOfWork
 from doculens.testing.vectors import InMemoryVectorStore
 
 pytestmark = pytest.mark.unit
+
+
+class _FailingCollectionVectors(InMemoryVectorStore):
+    async def set_document_collection(
+        self, owner_id: UUID, document_id: UUID, collection_id: UUID | None
+    ) -> int:
+        del owner_id, document_id, collection_id
+        raise VectorStoreUnavailableError
 
 
 async def test_a_collection_move_rewrites_the_document_vectors() -> None:
@@ -68,3 +82,23 @@ async def test_a_collection_move_rewrites_the_document_vectors() -> None:
     assert renamed.filename == "renamed.pdf"
     assert renamed.collection_id is None
     assert (await vectors.describe_document(owner.id, uuid4())) == {}
+
+
+async def test_a_failed_vector_move_reverts_the_postgres_collection() -> None:
+    store = InMemoryStore()
+    owner = Factories.user()
+    store.users[owner.id] = owner
+    source = Factories.collection(owner.id, "Source")
+    target = Factories.collection(owner.id, "Target")
+    store.collections[source.id] = source
+    store.collections[target.id] = target
+    document = Factories.document(owner.id, source.id)
+    store.documents[document.id] = document
+    service = DocumentService(
+        unit_of_work=lambda: InMemoryUnitOfWork(store), vectors=_FailingCollectionVectors()
+    )
+
+    with pytest.raises(VectorStoreUnavailableError):
+        await service.update(owner.id, document.id, collection_id=target.id)
+
+    assert store.documents[document.id].collection_id == source.id

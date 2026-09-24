@@ -3,7 +3,8 @@
 Every operation takes the acting user's ID and reaches the repository only through owner-scoped
 methods, so a collection that belongs to someone else behaves exactly like one that does not
 exist. Deleting a collection detaches its documents and conversations; it never deletes them
-(§30, enforced by the schema).
+(§30, enforced by the schema). Vector metadata follows the detach so collection-scoped
+retrieval does not keep pointing at a removed collection (§16).
 """
 
 from dataclasses import replace
@@ -11,6 +12,7 @@ from uuid import UUID
 
 from doculens.application.auth import Clock
 from doculens.application.unit_of_work import UnitOfWorkFactory
+from doculens.application.vectors import VectorStore
 from doculens.domain.collections import (
     MAX_COLLECTION_DESCRIPTION_LENGTH,
     MAX_COLLECTION_NAME_LENGTH,
@@ -32,8 +34,15 @@ def _clean_description(description: str | None) -> str | None:
 
 
 class CollectionService:
-    def __init__(self, *, unit_of_work: UnitOfWorkFactory, clock: Clock = utc_now) -> None:
+    def __init__(
+        self,
+        *,
+        unit_of_work: UnitOfWorkFactory,
+        vectors: VectorStore | None = None,
+        clock: Clock = utc_now,
+    ) -> None:
         self._unit_of_work = unit_of_work
+        self._vectors = vectors
         self._clock = clock
 
     async def create(self, owner_id: UUID, *, name: str, description: str | None) -> Collection:
@@ -93,6 +102,15 @@ class CollectionService:
         return updated
 
     async def delete(self, owner_id: UUID, collection_id: UUID) -> None:
+        async with self._unit_of_work() as uow:
+            if await uow.collections.get(owner_id, collection_id) is None:
+                raise CollectionNotFoundError
+            documents = await uow.documents.list_in_collection(owner_id, collection_id)
+        # Clear vector collection_id before the relational detach so metadata never
+        # references a collection that no longer exists.
+        if self._vectors is not None:
+            for document in documents:
+                await self._vectors.set_document_collection(owner_id, document.id, None)
         async with self._unit_of_work() as uow:
             if not await uow.collections.delete(owner_id, collection_id):
                 raise CollectionNotFoundError

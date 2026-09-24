@@ -38,14 +38,36 @@ class ProcessingStatus(StrEnum):
 
 ALLOWED_TRANSITIONS: Mapping[ProcessingStatus, frozenset[ProcessingStatus]] = {
     ProcessingStatus.UPLOADED: frozenset({ProcessingStatus.VALIDATING, ProcessingStatus.DELETING}),
-    ProcessingStatus.VALIDATING: frozenset({ProcessingStatus.EXTRACTING, ProcessingStatus.FAILED}),
-    ProcessingStatus.EXTRACTING: frozenset({ProcessingStatus.CHUNKING, ProcessingStatus.FAILED}),
-    ProcessingStatus.CHUNKING: frozenset({ProcessingStatus.EMBEDDING, ProcessingStatus.FAILED}),
-    ProcessingStatus.EMBEDDING: frozenset({ProcessingStatus.INDEXING, ProcessingStatus.FAILED}),
-    ProcessingStatus.INDEXING: frozenset({ProcessingStatus.READY, ProcessingStatus.FAILED}),
-    # Reprocessing (§29, §32) restarts the pipeline; the exact reprocess/re-index split is OQ-5.
-    ProcessingStatus.READY: frozenset({ProcessingStatus.VALIDATING, ProcessingStatus.DELETING}),
-    ProcessingStatus.FAILED: frozenset({ProcessingStatus.VALIDATING, ProcessingStatus.DELETING}),
+    ProcessingStatus.VALIDATING: frozenset(
+        {ProcessingStatus.EXTRACTING, ProcessingStatus.FAILED, ProcessingStatus.DELETING}
+    ),
+    ProcessingStatus.EXTRACTING: frozenset(
+        {ProcessingStatus.CHUNKING, ProcessingStatus.FAILED, ProcessingStatus.DELETING}
+    ),
+    ProcessingStatus.CHUNKING: frozenset(
+        {ProcessingStatus.EMBEDDING, ProcessingStatus.FAILED, ProcessingStatus.DELETING}
+    ),
+    ProcessingStatus.EMBEDDING: frozenset(
+        {ProcessingStatus.INDEXING, ProcessingStatus.FAILED, ProcessingStatus.DELETING}
+    ),
+    ProcessingStatus.INDEXING: frozenset(
+        {ProcessingStatus.READY, ProcessingStatus.FAILED, ProcessingStatus.DELETING}
+    ),
+    # Reprocess restarts from VALIDATING; re-index restarts from CHUNKING (ADR-019).
+    ProcessingStatus.READY: frozenset(
+        {
+            ProcessingStatus.VALIDATING,
+            ProcessingStatus.CHUNKING,
+            ProcessingStatus.DELETING,
+        }
+    ),
+    ProcessingStatus.FAILED: frozenset(
+        {
+            ProcessingStatus.VALIDATING,
+            ProcessingStatus.CHUNKING,
+            ProcessingStatus.DELETING,
+        }
+    ),
     ProcessingStatus.DELETING: frozenset({ProcessingStatus.DELETED}),
     ProcessingStatus.DELETED: frozenset(),
 }
@@ -54,6 +76,18 @@ ALLOWED_TRANSITIONS: Mapping[ProcessingStatus, frozenset[ProcessingStatus]] = {
 class InvalidStatusTransitionError(ConflictError):
     code = "INVALID_STATUS_TRANSITION"
     default_message = "The document cannot move to the requested processing state."
+
+
+class DocumentCannotReindexError(ConflictError):
+    """Re-index needs stored pages; a document that never completed extraction has none."""
+
+    code = "DOCUMENT_CANNOT_REINDEX"
+    default_message = "The document has no extracted pages to re-index."
+
+
+class DocumentDeletionInProgressError(ConflictError):
+    code = "DOCUMENT_DELETION_IN_PROGRESS"
+    default_message = "The document is being deleted."
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +114,14 @@ class Document:
     @property
     def is_ready(self) -> bool:
         return self.processing_status is ProcessingStatus.READY
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.processing_status is ProcessingStatus.DELETED
+
+    @property
+    def is_deleting(self) -> bool:
+        return self.processing_status is ProcessingStatus.DELETING
 
     def with_extraction(
         self, *, page_count: int, metadata: Mapping[str, object], now: datetime
@@ -120,6 +162,17 @@ class Document:
         failed = self.transition_to(ProcessingStatus.FAILED, now=now)
         return replace(failed, processing_error=safe_message)
 
+    def as_deleted(self, *, now: datetime) -> Self:
+        """Tombstone: the row survives, derived content is cleared (ADR-019, OQ-7)."""
+        deleted = self.transition_to(ProcessingStatus.DELETED, now=now)
+        return replace(
+            deleted,
+            page_count=None,
+            chunk_count=0,
+            indexed_at=None,
+            processing_error=None,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class DocumentPage:
@@ -147,7 +200,9 @@ __all__ = [
     "ALLOWED_TRANSITIONS",
     "MAX_FILENAME_LENGTH",
     "Document",
+    "DocumentCannotReindexError",
     "DocumentChunk",
+    "DocumentDeletionInProgressError",
     "DocumentNotFoundError",
     "DocumentPage",
     "InvalidStatusTransitionError",

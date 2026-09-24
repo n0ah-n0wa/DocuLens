@@ -97,6 +97,8 @@ B. Hard delete everything; citation FK `ON DELETE SET NULL` with a copied `filen
 C. Hard delete with cascade to citations (breaks message immutability semantics).
 **Proposed default:** A (matches the state machine and makes the deletion saga observable/resumable), with
 a periodic purge of old tombstones documented under §69.
+**Decided (2026-09-24, ADR-019):** option A. The row is a `DELETED` tombstone; content is purged;
+citations keep `document_id` and lose `chunk_id`. §31 is amended. Periodic purge remains open.
 
 ### OQ-8 — Conversation scope model and nullability of `collection_id`
 
@@ -165,6 +167,8 @@ A language-specific configuration remains open until the corpus language is know
 **Proposed default:** `reprocess` = full pipeline from the S3 original (new extraction); `reindex` = re-chunk
 and re-embed from stored pages (skips extraction). Both idempotent, both replace vectors by deterministic id.
 Add `POST /documents/{id}/reindex` to §33 or fold into a `mode` body parameter.
+**Decided (2026-09-24, ADR-019):** two endpoints as proposed. `reprocess` → `VALIDATING`;
+`reindex` → `CHUNKING` when pages exist.
 
 ### OQ-6 — Duplicate upload policy
 
@@ -180,6 +184,14 @@ the existing document id; cross-user duplicates are allowed (no cross-user linka
 **Problem:** "must not automatically delete its documents unless explicitly specified" — but where do they go?
 **Proposed default:** `DELETE /collections/{id}` detaches documents (`collection_id = NULL`);
 `?delete_documents=true` cascades via the document deletion saga. Depends on OQ-8 nullability.
+**Collections phase note (2026-09-24):** the detach half is implemented and pinned by tests at
+three levels (schema `ON DELETE SET NULL`, repository, and HTTP against PostgreSQL): deleting a
+collection detaches its documents and conversations and deletes neither. The opt-in
+`?delete_documents=true` cascade is **not** implemented, because deleting a document also has to
+remove its S3 object and its vectors (§31) and that saga does not exist yet and is itself blocked
+on `OQ-7`. Adding the flag before the saga would leave orphaned objects and vectors.
+**Lifecycle phase note (2026-09-24):** the document deletion saga now exists (ADR-019). The
+opt-in cascade is still not implemented; it can call `DocumentService.delete` when wanted.
 
 ### OQ-10 — "Search documents" (§29) vs. "search documents semantically" (§2 goal 7)
 
@@ -188,6 +200,8 @@ the existing document id; cross-user duplicates are allowed (no cross-user linka
 semantic search returns ranked chunks without LLM generation.
 **Proposed default:** `GET /documents?q=` for metadata search; `POST /search` (scope + query → ranked chunks
 with citations metadata) for semantic search, reusing the retrieval pipeline. Both added to §33.
+**Lifecycle phase note (2026-09-24):** metadata search is implemented (`GET /documents?q=`,
+literal, case-insensitive, `LIKE` wildcards escaped). Semantic `POST /search` remains open.
 
 ### OQ-11 — Overlapping limit/quota names, units, and the cost pricing table
 
@@ -369,3 +383,7 @@ the fallback of citing all surviving chunks when the provider cannot follow the 
 | OQ-29                                                                                                                                                                                                     | Decided (ADR-018): both paths. An empty retrieval context short-circuits before any model call and answers with the prescribed sentence; a model answer starting with that sentence is reported as insufficient evidence without citations. The evaluation suite measures each path.                                                                                                            | 2026-09-22 | ADR-018 |
 | OQ-30                                                                                                                                                                                                     | Decided (ADR-018): numbered context items; the model cites `[n]`, references are validated server-side against the prompt's context, invalid ones are removed and counted, valid ones become citation rows quoting the evidence.                                                                                                                                                                | 2026-09-22 | ADR-018 |
 | OQ-18                                                                                                                                                                                                     | Provisional (ADR-018): nothing is persisted when generation fails (a retryable 503); the rewritten query is returned in the result's retrieval metadata, not stored. Streaming revisits both.                                                                                                                                                                                                   | 2026-09-22 | ADR-018 |
+| OQ-9                                                                                                                                                                                                      | Half decided: deleting a collection detaches its documents and conversations (`ON DELETE SET NULL`) and deletes neither; this is now pinned by tests at the schema, repository and HTTP levels. The explicit `?delete_documents=true` cascade is deferred; the document deletion saga now exists (ADR-019).                                                                                     | 2026-09-24 | —       |
+| OQ-5                                                                                                                                                                                                      | Decided (ADR-019): `POST /documents/{id}/reprocess` restarts from `VALIDATING`; `POST /documents/{id}/reindex` restarts from `CHUNKING` when pages exist. Both compare-and-set; an already-restarting document is returned unchanged.                                                                                                                                                           | 2026-09-24 | ADR-019 |
+| OQ-7                                                                                                                                                                                                      | Decided (ADR-019): soft-delete tombstone. The row stays `DELETED`; pages, chunks, vectors and the object are purged; citations keep `document_id` and lose `chunk_id`. Tombstones are hidden from reads; a second delete is a no-op. Periodic purge of old tombstones remains open.                                                                                                             | 2026-09-24 | ADR-019 |
+| OQ-10                                                                                                                                                                                                     | Half decided (ADR-019): `GET /documents?q=` is literal case-insensitive filename search. Semantic `POST /search` remains open.                                                                                                                                                                                                                                                                  | 2026-09-24 | ADR-019 |

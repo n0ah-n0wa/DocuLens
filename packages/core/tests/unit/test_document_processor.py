@@ -1,6 +1,6 @@
 """The processor walks the §7.3 states, is idempotent, resumable and safe under duplicate jobs."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -16,6 +16,7 @@ from doculens.application.ingestion import (
 )
 from doculens.domain.chunking import ChunkingConfig
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
+from doculens.domain.embeddings import EmbeddingResult
 from doculens.domain.errors import DatabaseUnavailableError
 from doculens.domain.ingestion import (
     CorruptedPdfError,
@@ -522,3 +523,49 @@ async def test_re_extraction_discards_metadata_derived_from_the_previous_pages(
     assert isinstance(chunking, dict)
     assert "stale" not in chunking
     assert stored.metadata["pdf"] == {"title": "Quarterly report", "author": "Ada"}
+
+
+async def test_delete_during_embedding_purges_vectors_written_after_the_purge(
+    world: World, sample: bytes
+) -> None:
+    document = await world.seed(sample)
+    await world.processor.process(document.id)
+    await world.vectors.delete_document(world.owner_id, document.id)
+    ready = world.document(document.id)
+    world.store.documents[document.id] = replace(
+        ready, processing_status=ProcessingStatus.EMBEDDING
+    )
+
+    class RaceEmbeddings:
+        name = world.embeddings.name
+
+        @property
+        def model(self) -> str:
+            return world.embeddings.model
+
+        async def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult:
+            result = await world.embeddings.embed_documents(texts)
+            current = world.store.documents[document.id]
+            world.store.documents[document.id] = replace(
+                current, processing_status=ProcessingStatus.DELETING
+            )
+            return result
+
+        async def embed_query(self, text: str) -> EmbeddingResult:
+            return await world.embeddings.embed_query(text)
+
+    processor = DocumentProcessor(
+        unit_of_work=world.unit_of_work,
+        storage=world.storage,
+        extractor=world.extractor,
+        chunker=CHUNKER,
+        embeddings=RaceEmbeddings(),
+        vectors=world.vectors,
+        limits=LIMITS,
+    )
+
+    report = await processor.process(document.id)
+
+    assert report.outcome is ProcessingOutcome.CONCURRENT
+    assert world.document(document.id).processing_status is ProcessingStatus.DELETING
+    assert await world.vectors.count(world.owner_id, document.id) == 0

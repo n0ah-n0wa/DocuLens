@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -62,6 +63,38 @@ def test_skipping_a_stage_is_refused() -> None:
 
 def test_deleted_is_terminal() -> None:
     assert ALLOWED_TRANSITIONS[ProcessingStatus.DELETED] == frozenset()
+
+
+def test_a_ready_document_can_be_reindexed_or_reprocessed_or_deleted() -> None:
+    ready = _document(ProcessingStatus.READY)
+    assert ready.transition_to(ProcessingStatus.CHUNKING, now=T1).processing_status is (
+        ProcessingStatus.CHUNKING
+    )
+    assert ready.transition_to(ProcessingStatus.VALIDATING, now=T1).processing_status is (
+        ProcessingStatus.VALIDATING
+    )
+    assert ready.transition_to(ProcessingStatus.DELETING, now=T1).processing_status is (
+        ProcessingStatus.DELETING
+    )
+
+
+def test_as_deleted_clears_derived_content_and_keeps_identity() -> None:
+    deleting = replace(
+        _document(ProcessingStatus.DELETING),
+        page_count=4,
+        chunk_count=12,
+        indexed_at=T0,
+        processing_error="stale",
+    )
+    tombstone = deleting.as_deleted(now=T1)
+
+    assert tombstone.processing_status is ProcessingStatus.DELETED
+    assert tombstone.page_count is None
+    assert tombstone.chunk_count == 0
+    assert tombstone.indexed_at is None
+    assert tombstone.processing_error is None
+    assert tombstone.id == deleting.id
+    assert tombstone.storage_key == deleting.storage_key
 
 
 def test_mark_failed_records_a_safe_message_and_reprocessing_clears_it() -> None:

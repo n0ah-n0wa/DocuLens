@@ -39,6 +39,21 @@ from doculens.infrastructure.persistence.models import (
     UserModel,
 )
 
+LIKE_ESCAPE = "\\"
+
+
+def _escape_like(value: str) -> str:
+    """Neutralise ``LIKE`` wildcards so a filename search matches the query literally.
+
+    Without this a query of ``%`` would match every document and ``_`` any single character.
+    """
+    for character in (LIKE_ESCAPE, "%", "_"):
+        value = value.replace(character, LIKE_ESCAPE + character)
+    return value
+
+
+_LIVE_DOCUMENT = DocumentModel.processing_status != ProcessingStatus.DELETED
+
 
 class SqlAlchemyRefreshTokenRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -207,7 +222,7 @@ class SqlAlchemyDocumentRepository:
     async def list_for_owner(self, owner_id: UUID) -> list[Document]:
         rows = await self._session.scalars(
             select(DocumentModel)
-            .where(DocumentModel.owner_id == owner_id)
+            .where(DocumentModel.owner_id == owner_id, _LIVE_DOCUMENT)
             .order_by(DocumentModel.created_at, DocumentModel.id)
         )
         return [mappers.document_to_domain(row) for row in rows]
@@ -215,8 +230,27 @@ class SqlAlchemyDocumentRepository:
     async def list_in_collection(self, owner_id: UUID, collection_id: UUID) -> list[Document]:
         rows = await self._session.scalars(
             select(DocumentModel)
-            .where(DocumentModel.owner_id == owner_id, DocumentModel.collection_id == collection_id)
+            .where(
+                DocumentModel.owner_id == owner_id,
+                DocumentModel.collection_id == collection_id,
+                _LIVE_DOCUMENT,
+            )
             .order_by(DocumentModel.created_at, DocumentModel.id)
+        )
+        return [mappers.document_to_domain(row) for row in rows]
+
+    async def search_for_owner(
+        self, owner_id: UUID, *, query: str, collection_id: UUID | None = None
+    ) -> list[Document]:
+        statement = select(DocumentModel).where(
+            DocumentModel.owner_id == owner_id,
+            _LIVE_DOCUMENT,
+            DocumentModel.filename.ilike(f"%{_escape_like(query)}%", escape=LIKE_ESCAPE),
+        )
+        if collection_id is not None:
+            statement = statement.where(DocumentModel.collection_id == collection_id)
+        rows = await self._session.scalars(
+            statement.order_by(DocumentModel.created_at, DocumentModel.id)
         )
         return [mappers.document_to_domain(row) for row in rows]
 
@@ -224,7 +258,7 @@ class SqlAlchemyDocumentRepository:
         count = await self._session.scalar(
             select(func.count())
             .select_from(DocumentModel)
-            .where(DocumentModel.owner_id == owner_id)
+            .where(DocumentModel.owner_id == owner_id, _LIVE_DOCUMENT)
         )
         return int(count or 0)
 

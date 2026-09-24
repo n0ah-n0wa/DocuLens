@@ -91,6 +91,9 @@ def _requests(seed: Seed) -> list[tuple[str, str, dict[str, object] | None, str]
         ("GET", f"/api/v1/documents?collection_id={c}", None, "COLLECTION_NOT_FOUND"),
         ("GET", f"/api/v1/documents/{d}", None, "DOCUMENT_NOT_FOUND"),
         ("PATCH", f"/api/v1/documents/{d}", {"filename": "taken.pdf"}, "DOCUMENT_NOT_FOUND"),
+        ("DELETE", f"/api/v1/documents/{d}", None, "DOCUMENT_NOT_FOUND"),
+        ("POST", f"/api/v1/documents/{d}/reprocess", None, "DOCUMENT_NOT_FOUND"),
+        ("POST", f"/api/v1/documents/{d}/reindex", None, "DOCUMENT_NOT_FOUND"),
         ("GET", f"/api/v1/conversations/{v}", None, "CONVERSATION_NOT_FOUND"),
         ("PATCH", f"/api/v1/conversations/{v}", {"title": "Taken"}, "CONVERSATION_NOT_FOUND"),
         ("DELETE", f"/api/v1/conversations/{v}", None, "CONVERSATION_NOT_FOUND"),
@@ -106,7 +109,7 @@ def _requests(seed: Seed) -> list[tuple[str, str, dict[str, object] | None, str]
 
 def test_the_owner_can_reach_everything(client: TestClient, seed: Seed) -> None:
     for method, path, body, _ in _requests(seed):
-        if method == "DELETE":
+        if method == "DELETE" or path.endswith(("/reprocess", "/reindex")):
             continue
         response = client.request(method, path, json=body, headers=seed.alice)
         assert response.status_code in (HTTPStatus.OK, HTTPStatus.CREATED), (
@@ -188,6 +191,9 @@ def test_every_resource_route_requires_authentication(client: TestClient, seed: 
         ("GET", "/api/v1/collections", None, ""),
         ("POST", "/api/v1/collections", {"name": "x"}, ""),
         ("GET", "/api/v1/documents", None, ""),
+        ("DELETE", f"/api/v1/documents/{seed.document_id}", None, ""),
+        ("POST", f"/api/v1/documents/{seed.document_id}/reprocess", None, ""),
+        ("POST", f"/api/v1/documents/{seed.document_id}/reindex", None, ""),
         ("GET", "/api/v1/conversations", None, ""),
         ("POST", "/api/v1/conversations", {"title": "x"}, ""),
     ]

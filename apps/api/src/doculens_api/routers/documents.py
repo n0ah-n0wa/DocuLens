@@ -1,7 +1,7 @@
-"""Document metadata (SPECIFICATIONS.md §29, §33): list, inspect, rename, move.
+"""Document metadata and lifecycle (SPECIFICATIONS.md §29, §31, §32, §33).
 
-Upload, reprocessing and deletion arrive with the ingestion phase. Storage keys and content
-hashes are internal and never exposed.
+Upload itself is still the intake use case (OQ-3). Storage keys and content hashes are
+internal and never exposed.
 """
 
 from datetime import datetime
@@ -9,7 +9,7 @@ from http import HTTPStatus
 from typing import Annotated, Any, Self
 from uuid import UUID
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel, Field
 
 from doculens.domain.common import UNSET
@@ -36,6 +36,7 @@ class DocumentResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     indexed_at: datetime | None
+    metadata: dict[str, object] = Field(default_factory=dict)
 
     @classmethod
     def from_document(cls, document: Document) -> Self:
@@ -52,6 +53,7 @@ class DocumentResponse(BaseModel):
             created_at=document.created_at,
             updated_at=document.updated_at,
             indexed_at=document.indexed_at,
+            metadata=dict(document.metadata),
         )
 
 
@@ -62,13 +64,20 @@ class UpdateDocumentRequest(BaseModel):
     collection_id: UUID | None = None
 
 
-@router.get("", summary="List the user's documents, optionally within one collection")
+@router.get("", summary="List or search the user's documents, optionally within one collection")
 async def list_documents(
     user: CurrentUserDep,
     documents: DocumentServiceDep,
     collection_id: Annotated[UUID | None, Query()] = None,
+    q: Annotated[
+        str | None,
+        Query(
+            max_length=MAX_FILENAME_LENGTH,
+            description="Filename search: a literal, case-insensitive substring (§29).",
+        ),
+    ] = None,
 ) -> list[DocumentResponse]:
-    listed = await documents.list_for_owner(user.id, collection_id=collection_id)
+    listed = await documents.list_for_owner(user.id, collection_id=collection_id, query=q)
     return [DocumentResponse.from_document(d) for d in listed]
 
 
@@ -93,3 +102,38 @@ async def update_document(
         collection_id=body.collection_id if "collection_id" in body.model_fields_set else UNSET,
     )
     return DocumentResponse.from_document(document)
+
+
+@router.delete(
+    "/{document_id}",
+    status_code=HTTPStatus.NO_CONTENT,
+    summary="Delete a document and its stored content (idempotent)",
+    responses=NOT_FOUND,
+)
+async def delete_document(
+    document_id: UUID, user: CurrentUserDep, documents: DocumentServiceDep
+) -> Response:
+    await documents.delete(user.id, document_id)
+    return Response(status_code=HTTPStatus.NO_CONTENT)
+
+
+@router.post(
+    "/{document_id}/reprocess",
+    summary="Re-run the pipeline from the stored original",
+    responses=NOT_FOUND,
+)
+async def reprocess_document(
+    document_id: UUID, user: CurrentUserDep, documents: DocumentServiceDep
+) -> DocumentResponse:
+    return DocumentResponse.from_document(await documents.reprocess(user.id, document_id))
+
+
+@router.post(
+    "/{document_id}/reindex",
+    summary="Re-chunk and re-embed from stored pages",
+    responses=NOT_FOUND,
+)
+async def reindex_document(
+    document_id: UUID, user: CurrentUserDep, documents: DocumentServiceDep
+) -> DocumentResponse:
+    return DocumentResponse.from_document(await documents.reindex(user.id, document_id))

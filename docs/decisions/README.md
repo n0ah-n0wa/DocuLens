@@ -46,6 +46,7 @@ that later readers understand why the system looks the way it does.
 | [ADR-016](ADR-016-retrieval-service.md)           | Retrieval, reranking and the RAG boundary      | Accepted               | OQ-4 provisional; OQ-8, OQ-17 open; OQ-29 partly |
 | [ADR-017](ADR-017-grounded-prompt.md)             | Grounded prompt architecture                   | Accepted               | OQ-29, OQ-30 partly                              |
 | [ADR-018](ADR-018-answering-pipeline.md)          | Answering pipeline and citations               | Accepted               | OQ-8, OQ-18 provisional                          |
+| [ADR-019](ADR-019-document-lifecycle.md)          | Document lifecycle: delete, reprocess, reindex | Accepted               | OQ-5, OQ-7 provisional; OQ-10 half               |
 
 Decisions that only affect ingestion behaviour (OQ-3, OQ-5, OQ-6, OQ-7, OQ-14), the conversation
 model (OQ-8, OQ-18) or observability (OQ-21) are recorded as new ADRs (013 onwards) when

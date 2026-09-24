@@ -179,7 +179,7 @@ async def test_a_cited_document_cannot_be_hard_deleted_and_citations_survive_rei
         assert stored.chunk_id is None
         assert stored.quoted_text == "evidence"
 
-    # Hard-deleting a cited document is refused until OQ-7 decides tombstoning.
+    # Hard-deleting a cited document is refused; deletion tombstones the row (ADR-019).
     async with database.session_factory() as session:
         row = await session.get(DocumentModel, document_id)
         assert row is not None

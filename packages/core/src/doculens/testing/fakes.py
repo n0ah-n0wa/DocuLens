@@ -158,11 +158,28 @@ class InMemoryDocumentRepository:
         return True
 
     async def list_for_owner(self, owner_id: UUID) -> list[Document]:
-        owned = [d for d in self._store.documents.values() if d.owner_id == owner_id]
+        owned = [
+            d
+            for d in self._store.documents.values()
+            if d.owner_id == owner_id and d.processing_status is not ProcessingStatus.DELETED
+        ]
         return sorted(owned, key=lambda d: (d.created_at, d.id.hex))
 
     async def list_in_collection(self, owner_id: UUID, collection_id: UUID) -> list[Document]:
         return [d for d in await self.list_for_owner(owner_id) if d.collection_id == collection_id]
+
+    async def search_for_owner(
+        self, owner_id: UUID, *, query: str, collection_id: UUID | None = None
+    ) -> list[Document]:
+        """Case-insensitive literal substring of the filename, like the SQL adapter's escaped
+        ``ILIKE``: wildcards in ``query`` carry no special meaning."""
+        needle = query.casefold()
+        return [
+            document
+            for document in await self.list_for_owner(owner_id)
+            if needle in document.filename.casefold()
+            and (collection_id is None or document.collection_id == collection_id)
+        ]
 
     async def count_for_owner(self, owner_id: UUID) -> int:
         return len(await self.list_for_owner(owner_id))
