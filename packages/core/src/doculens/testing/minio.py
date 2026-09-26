@@ -19,7 +19,11 @@ import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
-MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
+MINIO_IMAGE = (
+    # Official MinIO images left Docker Hub and quay.io anonymous pulls now return 401.
+    # Chainguard publishes a maintained public MinIO image (ADR-014).
+    "cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1"
+)
 MINIO_PORT = 9000
 MINIO_STARTUP_TIMEOUT_SECONDS = 60.0
 TEST_ACCESS_KEY_ID = "doculens-test"

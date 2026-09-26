@@ -142,7 +142,7 @@ async def test_a_missing_bucket_is_unavailable_not_a_missing_object(
 async def test_sse_s3_is_refused_by_a_store_without_kms_rather_than_silently_dropped(
     s3_settings: CoreSettings,
 ) -> None:
-    """MinIO without a KMS rejects SSE requests, which proves the header is really sent."""
+    """A store without KMS rejects SSE-S3 requests, which proves the header is really sent."""
     storage = build_object_storage(
         s3_settings.model_copy(update={"storage_encryption": StorageEncryption.AES256})
     )

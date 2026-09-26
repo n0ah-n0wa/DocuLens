@@ -53,7 +53,12 @@ services:
       retries: 10
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # Official MinIO Hub/Quay images are no longer anonymously pullable; Chainguard hosts a
+    # public maintained build (ADR-014). Digest-pinned so CI does not float on :latest.
+    # Runs as root in compose so the named volume (often root-owned from the previous
+    # quay.io image) stays writable; testcontainers uses the image default nonroot user.
+    image: cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
+    user: "0:0"
     command: ["server", "/data"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-doculens}
@@ -63,13 +68,18 @@ services:
     volumes:
       - minio-data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test:
+        [
+          "CMD-SHELL",
+          'mc alias set local http://127.0.0.1:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null && mc ready local',
+        ]
       interval: 5s
-      timeout: 3s
-      retries: 10
+      timeout: 5s
+      retries: 12
+      start_period: 5s
 
   minio-init:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: cgr.dev/chainguard/minio@sha256:bd014394a80898e68c149f2311fdf8d5a2c2f3bb2c33b9327ae6d02b4b065ae1
     profiles: ["init"]
     depends_on:
       minio:
