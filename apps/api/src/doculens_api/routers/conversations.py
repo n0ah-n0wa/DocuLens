@@ -7,7 +7,7 @@ from the answer text (§23). Every route addresses the caller's own conversation
 
 from datetime import datetime
 from http import HTTPStatus
-from typing import Any, Self
+from typing import Self
 from uuid import UUID
 
 from fastapi import APIRouter, Response
@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from doculens.application.conversations import MessageWithCitations
 from doculens.application.rag import RagQuery
+from doculens.application.ratelimit import enforce
 from doculens.domain.answering import AnswerOutcome, AnswerResult
 from doculens.domain.common import UNSET
 from doculens.domain.conversations import (
@@ -24,13 +25,26 @@ from doculens.domain.conversations import (
     Message,
     MessageRole,
 )
-from doculens_api.dependencies import ConversationServiceDep, CurrentUserDep, RagServiceDep
+from doculens_api.dependencies import (
+    ConversationServiceDep,
+    CurrentUserDep,
+    RagServiceDep,
+    RateLimiterDep,
+    SettingsDep,
+)
+from doculens_api.errors import (
+    BAD_REQUEST_RESPONSE,
+    BEARER_AUTH_RESPONSES,
+    NOT_FOUND_RESPONSE,
+    RATE_LIMITED_RESPONSE,
+    ErrorResponse,
+)
 
-router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
-
-NOT_FOUND: dict[int | str, dict[str, Any]] = {
-    HTTPStatus.NOT_FOUND: {"description": "No such conversation or collection for this user."}
-}
+router = APIRouter(
+    prefix="/api/v1/conversations",
+    tags=["conversations"],
+    responses=BEARER_AUTH_RESPONSES,
+)
 
 
 class ConversationResponse(BaseModel):
@@ -101,7 +115,14 @@ class AskRequest(BaseModel):
     """A question for the conversation; ``document_ids`` narrows retrieval to those documents
     for this question only (§27), otherwise the conversation's collection or every document."""
 
-    question: str = Field(min_length=1, max_length=20_000)
+    question: str = Field(
+        min_length=1,
+        max_length=100_000,
+        description=(
+            "Natural-language question. Transport max matches `RETRIEVAL_MAX_QUERY_CHARACTERS` "
+            "upper bound (100000); the effective cap is the deployed setting (default 2000)."
+        ),
+    )
     document_ids: list[UUID] | None = Field(default=None, min_length=1, max_length=100)
 
 
@@ -202,7 +223,10 @@ class UpdateConversationRequest(BaseModel):
 
 
 @router.post(
-    "", status_code=HTTPStatus.CREATED, summary="Create a conversation", responses=NOT_FOUND
+    "",
+    status_code=HTTPStatus.CREATED,
+    summary="Create a conversation",
+    responses={**NOT_FOUND_RESPONSE, **BAD_REQUEST_RESPONSE},
 )
 async def create_conversation(
     body: CreateConversationRequest, user: CurrentUserDep, conversations: ConversationServiceDep
@@ -221,7 +245,7 @@ async def list_conversations(
     return [ConversationResponse.from_conversation(c) for c in listed]
 
 
-@router.get("/{conversation_id}", summary="Inspect a conversation", responses=NOT_FOUND)
+@router.get("/{conversation_id}", summary="Inspect a conversation", responses=NOT_FOUND_RESPONSE)
 async def get_conversation(
     conversation_id: UUID, user: CurrentUserDep, conversations: ConversationServiceDep
 ) -> ConversationResponse:
@@ -229,7 +253,11 @@ async def get_conversation(
     return ConversationResponse.from_conversation(conversation)
 
 
-@router.patch("/{conversation_id}", summary="Rename or move a conversation", responses=NOT_FOUND)
+@router.patch(
+    "/{conversation_id}",
+    summary="Rename or move a conversation",
+    responses={**NOT_FOUND_RESPONSE, **BAD_REQUEST_RESPONSE},
+)
 async def update_conversation(
     conversation_id: UUID,
     body: UpdateConversationRequest,
@@ -249,7 +277,7 @@ async def update_conversation(
     "/{conversation_id}",
     status_code=HTTPStatus.NO_CONTENT,
     summary="Delete a conversation and its messages",
-    responses=NOT_FOUND,
+    responses=NOT_FOUND_RESPONSE,
 )
 async def delete_conversation(
     conversation_id: UUID, user: CurrentUserDep, conversations: ConversationServiceDep
@@ -263,16 +291,29 @@ async def delete_conversation(
     status_code=HTTPStatus.CREATED,
     summary="Ask a question in the conversation and persist the grounded, cited answer",
     responses={
-        **NOT_FOUND,
-        HTTPStatus.BAD_REQUEST: {"description": "The question or scope cannot be used."},
+        **NOT_FOUND_RESPONSE,
+        **BAD_REQUEST_RESPONSE,
+        **RATE_LIMITED_RESPONSE,
         HTTPStatus.SERVICE_UNAVAILABLE: {
-            "description": "A provider did not answer in time; nothing was recorded, retry."
+            "model": ErrorResponse,
+            "description": "A provider did not answer in time; nothing was recorded, retry.",
         },
     },
 )
 async def ask_question(
-    conversation_id: UUID, body: AskRequest, user: CurrentUserDep, rag: RagServiceDep
+    conversation_id: UUID,
+    body: AskRequest,
+    user: CurrentUserDep,
+    rag: RagServiceDep,
+    limiter: RateLimiterDep,
+    settings: SettingsDep,
 ) -> AnswerResponse:
+    await enforce(
+        limiter,
+        f"ask:user:{user.id}",
+        limit=settings.ask_rate_limit_attempts,
+        window_seconds=settings.ask_rate_limit_window_seconds,
+    )
     result = await rag.answer(
         RagQuery(owner_id=user.id, question=body.question, document_ids=body.document_ids),
         conversation_id=conversation_id,
@@ -283,7 +324,7 @@ async def ask_question(
 @router.get(
     "/{conversation_id}/messages",
     summary="The conversation's messages with their citations, oldest first",
-    responses=NOT_FOUND,
+    responses=NOT_FOUND_RESPONSE,
 )
 async def list_messages(
     conversation_id: UUID, user: CurrentUserDep, conversations: ConversationServiceDep

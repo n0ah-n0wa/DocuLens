@@ -30,7 +30,7 @@ from doculens.domain.errors import (
     RateLimitedError,
     UnauthenticatedError,
 )
-from doculens.domain.ingestion import FileTooLargeError
+from doculens.domain.ingestion import DuplicateDocumentError, FileTooLargeError
 from doculens.domain.storage import ObjectIntegrityError, ObjectTooLargeError
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
@@ -76,6 +76,52 @@ DEFAULT_ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
     HTTPStatus.INTERNAL_SERVER_ERROR: {
         "model": ErrorResponse,
         "description": "Unexpected server error.",
+    },
+}
+
+BEARER_AUTH_RESPONSES: dict[int | str, dict[str, object]] = {
+    HTTPStatus.UNAUTHORIZED: {
+        "model": ErrorResponse,
+        "description": "Missing, invalid or expired access token.",
+    },
+    HTTPStatus.FORBIDDEN: {
+        "model": ErrorResponse,
+        "description": "The account is suspended or otherwise not allowed.",
+    },
+}
+
+NOT_FOUND_RESPONSE: dict[int | str, dict[str, object]] = {
+    HTTPStatus.NOT_FOUND: {
+        "model": ErrorResponse,
+        "description": "No such resource is visible to the caller.",
+    },
+}
+
+CONFLICT_RESPONSE: dict[int | str, dict[str, object]] = {
+    HTTPStatus.CONFLICT: {
+        "model": ErrorResponse,
+        "description": "The request conflicts with the resource's current state.",
+    },
+}
+
+BAD_REQUEST_RESPONSE: dict[int | str, dict[str, object]] = {
+    HTTPStatus.BAD_REQUEST: {
+        "model": ErrorResponse,
+        "description": "The input violates a domain rule.",
+    },
+}
+
+PAYLOAD_TOO_LARGE_RESPONSE: dict[int | str, dict[str, object]] = {
+    HTTPStatus.REQUEST_ENTITY_TOO_LARGE: {
+        "model": ErrorResponse,
+        "description": "The uploaded file exceeds the configured size limit.",
+    },
+}
+
+RATE_LIMITED_RESPONSE: dict[int | str, dict[str, object]] = {
+    HTTPStatus.TOO_MANY_REQUESTS: {
+        "model": ErrorResponse,
+        "description": "Too many attempts; see Retry-After.",
     },
 }
 
@@ -157,8 +203,21 @@ def register_error_handlers(app: FastAPI, *, header_name: str) -> None:
             extra_headers = BEARER_CHALLENGE
         elif isinstance(error, RateLimitedError):
             extra_headers = {"Retry-After": str(error.retry_after_seconds)}
+        details: list[ErrorDetail] | None = None
+        if isinstance(error, DuplicateDocumentError) and error.existing_document_id is not None:
+            details = [
+                ErrorDetail(
+                    location="existing_document_id",
+                    message=str(error.existing_document_id),
+                    type="uuid",
+                )
+            ]
         return error_response(
-            request, api_error, header_name=header_name, extra_headers=extra_headers
+            request,
+            api_error,
+            header_name=header_name,
+            details=details,
+            extra_headers=extra_headers,
         )
 
     async def handle_validation_error(request: Request, exc: Exception) -> JSONResponse:

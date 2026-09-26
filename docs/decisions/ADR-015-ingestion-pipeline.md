@@ -47,8 +47,8 @@ pages without text (OQ-14) and the upload transport (OQ-3) open.
 
 - New runtime dependency `pymupdf` in `doculens-core`; migration `0003` adds the column and the
   partial unique index.
-- The upload endpoint itself is not added: its transport (direct multipart versus presigned S3)
-  is `OQ-3`. Both variants end in `DocumentIntakeService.accept` or its presigned equivalent.
+- The upload HTTP surface is direct multipart `POST /api/v1/documents` (provisional ADR-020 /
+  OQ-3); both variants end in `DocumentIntakeService.accept` or its future presigned equivalent.
 - Job enqueue after intake is ADR-011; until then processing is triggered by the worker command.
 - Chunking (ADR-003) consumes the persisted pages; embedding and indexing consume the chunks.
 - Retrieval and question answering (§17–§27) read the index; they are the next phase.

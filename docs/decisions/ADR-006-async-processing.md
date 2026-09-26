@@ -42,5 +42,4 @@ needs a queue that does not require AWS (OQ-13). Worker hosting (Lambda vs ECS) 
 - ADR-011 is accepted provisionally on option A; the reconciliation sweep is part of this
   architecture and may land as a worker subcommand in a follow-up.
 - OQ-2 stays open: ECS vs Lambda does not change the `JobQueue` port.
-- Upload HTTP transport (OQ-3) still pending; when it lands it must call intake (which already
-  enqueues).
+- Upload HTTP transport is direct multipart (ADR-020); large-file / Lambda upgrade remains OQ-3.

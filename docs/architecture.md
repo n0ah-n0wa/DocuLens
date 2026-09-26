@@ -201,14 +201,16 @@ and stable ids), `EMBEDDING` (batched, retried provider calls with usage account
 isolated, time- and memory-bounded parser process. The worker's `process <document-id>`
 command drives it until the queue consumer exists.
 
-**Implemented** (§29, §31, §32, [ADR-019](decisions/ADR-019-document-lifecycle.md)): filename
-search (`GET /documents?q=`), inspect (including extraction metadata), rename, move, delete
-(idempotent tombstone saga: vectors → object store → pages/chunks → `DELETED`), reprocess
-(`VALIDATING`) and re-index (`CHUNKING`). Tombstones are hidden from reads; citations keep
-`document_id` and lose `chunk_id`.
+**Implemented** (§29, §31, §32, [ADR-019](decisions/ADR-019-document-lifecycle.md),
+[ADR-020](decisions/ADR-020-document-upload-transport.md)): upload (`POST /documents`, direct
+multipart, provisional OQ-3), filename search (`GET /documents?q=`), inspect (including
+extraction metadata), rename, move, delete (idempotent tombstone saga: vectors → object store →
+pages/chunks → `DELETED`), reprocess (`VALIDATING`) and re-index (`CHUNKING`). Tombstones are
+hidden from reads; citations keep `document_id` and lose `chunk_id`. Job enqueue after intake
+follows ADR-011.
 
-**Planned** (§31–§32): the upload endpoint (`OQ-3`) and job enqueue (ADR-011). The specification
-fixes the states, validations and storage layout:
+**Planned** (§31–§32): presigned upload for large Lambda payloads (OQ-3 upgrade) and document
+download/view. The specification fixes the states, validations and storage layout:
 
 ```mermaid
 stateDiagram-v2
@@ -749,8 +751,8 @@ Trust boundaries fixed by the specification (§22, §53, §68):
 | Area                      | Implemented                                                                                                                                                                                                                                                                                                                                                       | Planned                                                                                      | Pending decisions                            |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------- |
 | Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots                                                                                                                                                                                                                                                        | ports, adapters                                                                              | —                                            |
-| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                                                                                                                                                                                                                                                                         | text rendering, versioned routes                                                             | OQ-3, OQ-3b, OQ-10, OQ-19                    |
-| Ingestion                 | intake validation, isolated PyMuPDF extraction, page persistence, semantic chunking, embedding and ChromaDB indexing to READY (ADR-002/003/004/015), CAS state transitions, filename search, delete saga, reprocess and re-index (ADR-019)                                                                                                                        | upload endpoint, job enqueue, staleness checks                                               | OQ-3                                         |
+| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI                                                                                                                                                                                                                                                                                         | text rendering, versioned routes                                                             | OQ-3 (download), OQ-3b, OQ-10, OQ-19         |
+| Ingestion                 | intake validation, isolated PyMuPDF extraction, page persistence, semantic chunking, embedding and ChromaDB indexing to READY (ADR-002/003/004/015), CAS state transitions, multipart upload (ADR-020), filename search, delete saga, reprocess and re-index (ADR-019), job enqueue (ADR-011)                                                                     | presigned upload, download/view, staleness checks                                            | OQ-3 (download / Lambda 50 MB)               |
 | RAG                       | embedding provider port and adapters (ADR-004), LLM provider port and adapters (ADR-005), vector store port and ChromaDB adapter with tenant isolation (ADR-002), retrieval service with semantic, keyword and hybrid strategies and optional reranking (ADR-016), grounded prompt builder (ADR-017), answering use case with citations and persistence (ADR-018) | chat endpoints, streaming, hosted reranker adapter, quotas, usage ledger, evaluation harness | OQ-4 (language), OQ-8, OQ-17, OQ-18, OQ-22   |
 | Async processing          | worker deployable                                                                                                                                                                                                                                                                                                                                                 | queue, guarded transitions, retries, DLQ                                                     | OQ-2, OQ-27 (ADR-011)                        |
 | Persistence               | §7 schema, Alembic migration, repositories, unit of work, DB probe, object storage port with S3 and filesystem adapters (ADR-014), document tombstones (ADR-019)                                                                                                                                                                                                  | usage ledger, tombstone purge                                                                | OQ-8, OQ-18, OQ-28 (ADR-012)                 |

@@ -1,25 +1,51 @@
 """Document metadata and lifecycle (SPECIFICATIONS.md §29, §31, §32, §33).
 
-Upload itself is still the intake use case (OQ-3). Storage keys and content hashes are
-internal and never exposed.
+Upload is direct multipart through the API (provisional OQ-3 / ADR-020). Storage keys and
+content hashes are internal and never exposed.
 """
 
 from datetime import datetime
 from http import HTTPStatus
-from typing import Annotated, Any, Self
+from typing import Annotated, Self
 from uuid import UUID
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, File, Form, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 
+from doculens.application.ratelimit import enforce
 from doculens.domain.common import UNSET
 from doculens.domain.documents import MAX_FILENAME_LENGTH, Document, ProcessingStatus
-from doculens_api.dependencies import CurrentUserDep, DocumentServiceDep
+from doculens.domain.ingestion import EmptyUploadError, FileTooLargeError
+from doculens_api.dependencies import (
+    CurrentUserDep,
+    DocumentIntakeDep,
+    DocumentServiceDep,
+    RateLimiterDep,
+    SettingsDep,
+)
+from doculens_api.errors import (
+    BAD_REQUEST_RESPONSE,
+    BEARER_AUTH_RESPONSES,
+    CONFLICT_RESPONSE,
+    NOT_FOUND_RESPONSE,
+    PAYLOAD_TOO_LARGE_RESPONSE,
+    RATE_LIMITED_RESPONSE,
+)
 
-router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
+router = APIRouter(
+    prefix="/api/v1/documents",
+    tags=["documents"],
+    responses=BEARER_AUTH_RESPONSES,
+)
 
-NOT_FOUND: dict[int | str, dict[str, Any]] = {
-    HTTPStatus.NOT_FOUND: {"description": "No such document or collection for this user."}
+MEBIBYTE = 1024 * 1024
+
+UPLOAD_RESPONSES = {
+    **NOT_FOUND_RESPONSE,
+    **BAD_REQUEST_RESPONSE,
+    **CONFLICT_RESPONSE,
+    **PAYLOAD_TOO_LARGE_RESPONSE,
+    **RATE_LIMITED_RESPONSE,
 }
 
 
@@ -64,7 +90,63 @@ class UpdateDocumentRequest(BaseModel):
     collection_id: UUID | None = None
 
 
-@router.get("", summary="List or search the user's documents, optionally within one collection")
+async def _read_upload(file: UploadFile, *, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes``; one extra byte detects oversize without buffering more."""
+    data = await file.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise FileTooLargeError
+    return data
+
+
+@router.post(
+    "",
+    status_code=HTTPStatus.CREATED,
+    summary="Upload a PDF document",
+    description=(
+        "Accepts a multipart PDF upload, validates it without parsing, stores the original, "
+        "registers the document as `UPLOADED`, and enqueues asynchronous processing. "
+        "Capped by `MAX_FILE_SIZE_MB` (provisional OQ-3 / ADR-020)."
+    ),
+    responses=UPLOAD_RESPONSES,
+)
+async def upload_document(
+    user: CurrentUserDep,
+    intake: DocumentIntakeDep,
+    settings: SettingsDep,
+    limiter: RateLimiterDep,
+    file: Annotated[UploadFile, File(description="PDF file to upload.")],
+    collection_id: Annotated[
+        UUID | None,
+        Form(description="Optional collection that must belong to the caller."),
+    ] = None,
+) -> DocumentResponse:
+    await enforce(
+        limiter,
+        f"upload:user:{user.id}",
+        limit=settings.upload_rate_limit_attempts,
+        window_seconds=settings.upload_rate_limit_window_seconds,
+    )
+    max_bytes = settings.max_file_size_mb * MEBIBYTE
+    data = await _read_upload(file, max_bytes=max_bytes)
+    if not data:
+        raise EmptyUploadError
+    filename = file.filename or ""
+    declared_mime = file.content_type or ""
+    document = await intake.accept(
+        user.id,
+        filename=filename,
+        declared_mime_type=declared_mime,
+        data=data,
+        collection_id=collection_id,
+    )
+    return DocumentResponse.from_document(document)
+
+
+@router.get(
+    "",
+    summary="List or search the user's documents, optionally within one collection",
+    responses=NOT_FOUND_RESPONSE,
+)
 async def list_documents(
     user: CurrentUserDep,
     documents: DocumentServiceDep,
@@ -81,14 +163,22 @@ async def list_documents(
     return [DocumentResponse.from_document(d) for d in listed]
 
 
-@router.get("/{document_id}", summary="Inspect a document", responses=NOT_FOUND)
+@router.get(
+    "/{document_id}",
+    summary="Inspect a document",
+    responses=NOT_FOUND_RESPONSE,
+)
 async def get_document(
     document_id: UUID, user: CurrentUserDep, documents: DocumentServiceDep
 ) -> DocumentResponse:
     return DocumentResponse.from_document(await documents.get(user.id, document_id))
 
 
-@router.patch("/{document_id}", summary="Rename a document or move it", responses=NOT_FOUND)
+@router.patch(
+    "/{document_id}",
+    summary="Rename a document or move it",
+    responses={**NOT_FOUND_RESPONSE, **BAD_REQUEST_RESPONSE},
+)
 async def update_document(
     document_id: UUID,
     body: UpdateDocumentRequest,
@@ -108,7 +198,7 @@ async def update_document(
     "/{document_id}",
     status_code=HTTPStatus.NO_CONTENT,
     summary="Delete a document and its stored content (idempotent)",
-    responses=NOT_FOUND,
+    responses=NOT_FOUND_RESPONSE,
 )
 async def delete_document(
     document_id: UUID, user: CurrentUserDep, documents: DocumentServiceDep
@@ -120,7 +210,7 @@ async def delete_document(
 @router.post(
     "/{document_id}/reprocess",
     summary="Re-run the pipeline from the stored original",
-    responses=NOT_FOUND,
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 async def reprocess_document(
     document_id: UUID, user: CurrentUserDep, documents: DocumentServiceDep
@@ -131,7 +221,7 @@ async def reprocess_document(
 @router.post(
     "/{document_id}/reindex",
     summary="Re-chunk and re-embed from stored pages",
-    responses=NOT_FOUND,
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
 )
 async def reindex_document(
     document_id: UUID, user: CurrentUserDep, documents: DocumentServiceDep

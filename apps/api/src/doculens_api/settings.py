@@ -46,6 +46,20 @@ class ApiSettings(CoreSettings):
         default=10, ge=1, le=1000, description="Auth requests allowed per key per window (§37)."
     )
     auth_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+    upload_rate_limit_attempts: int = Field(
+        default=30,
+        ge=1,
+        le=10_000,
+        description="Document uploads allowed per authenticated user per window (§37).",
+    )
+    upload_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+    ask_rate_limit_attempts: int = Field(
+        default=30,
+        ge=1,
+        le=10_000,
+        description="Questions allowed per authenticated user per window (§37).",
+    )
+    ask_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
 
     @property
     def docs_enabled(self) -> bool:

@@ -13,7 +13,7 @@ a distributed attacker. The limiter store is the in-process adapter until the Re
 
 import hashlib
 from http import HTTPStatus
-from typing import Any, Literal, Self
+from typing import Literal, Self
 
 from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field, SecretStr
@@ -27,13 +27,39 @@ from doculens.domain.auth import (
     normalize_email,
 )
 from doculens_api.dependencies import AuthServiceDep, ClientAddressDep, RateLimiterDep, SettingsDep
+from doculens_api.errors import (
+    BAD_REQUEST_RESPONSE,
+    CONFLICT_RESPONSE,
+    RATE_LIMITED_RESPONSE,
+    ErrorResponse,
+)
 from doculens_api.routers.users import UserResponse
 from doculens_api.settings import ApiSettings
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
-RATE_LIMITED_RESPONSE: dict[int | str, dict[str, Any]] = {
-    HTTPStatus.TOO_MANY_REQUESTS: {"description": "Too many attempts; see Retry-After."}
+LOGIN_FAILURE_RESPONSES: dict[int | str, dict[str, object]] = {
+    HTTPStatus.UNAUTHORIZED: {
+        "model": ErrorResponse,
+        "description": "Unknown email or wrong password.",
+    },
+    HTTPStatus.FORBIDDEN: {
+        "model": ErrorResponse,
+        "description": "The account is suspended.",
+    },
+    **RATE_LIMITED_RESPONSE,
+}
+
+TOKEN_FAILURE_RESPONSES: dict[int | str, dict[str, object]] = {
+    HTTPStatus.UNAUTHORIZED: {
+        "model": ErrorResponse,
+        "description": "Invalid, expired, revoked or reused token.",
+    },
+    HTTPStatus.FORBIDDEN: {
+        "model": ErrorResponse,
+        "description": "The account is suspended.",
+    },
+    **RATE_LIMITED_RESPONSE,
 }
 
 
@@ -86,8 +112,8 @@ def _account_key(email: str) -> str:
     status_code=HTTPStatus.CREATED,
     summary="Create an account",
     responses={
-        HTTPStatus.BAD_REQUEST: {"description": "Invalid email or password policy violation."},
-        HTTPStatus.CONFLICT: {"description": "The email address is already registered."},
+        **BAD_REQUEST_RESPONSE,
+        **CONFLICT_RESPONSE,
         **RATE_LIMITED_RESPONSE,
     },
 )
@@ -106,11 +132,7 @@ async def register(
 @router.post(
     "/login",
     summary="Exchange credentials for tokens",
-    responses={
-        HTTPStatus.UNAUTHORIZED: {"description": "Unknown email or wrong password."},
-        HTTPStatus.FORBIDDEN: {"description": "The account is suspended."},
-        **RATE_LIMITED_RESPONSE,
-    },
+    responses=LOGIN_FAILURE_RESPONSES,
 )
 async def login(
     body: CredentialsRequest,
@@ -127,11 +149,7 @@ async def login(
 @router.post(
     "/refresh",
     summary="Rotate a refresh token",
-    responses={
-        HTTPStatus.UNAUTHORIZED: {"description": "Invalid, expired, revoked or reused token."},
-        HTTPStatus.FORBIDDEN: {"description": "The account is suspended."},
-        **RATE_LIMITED_RESPONSE,
-    },
+    responses=TOKEN_FAILURE_RESPONSES,
 )
 async def refresh(
     body: RefreshRequest,
@@ -150,7 +168,10 @@ async def refresh(
     status_code=HTTPStatus.NO_CONTENT,
     summary="Revoke the session of a refresh token",
     responses={
-        HTTPStatus.UNAUTHORIZED: {"description": "Malformed or expired token."},
+        HTTPStatus.UNAUTHORIZED: {
+            "model": ErrorResponse,
+            "description": "Malformed or expired token.",
+        },
         **RATE_LIMITED_RESPONSE,
     },
 )

@@ -9,8 +9,9 @@ from pydantic import BaseModel, Field
 
 from doculens.domain.users import User, UserStatus
 from doculens_api.dependencies import CurrentUserDep
+from doculens_api.errors import BEARER_AUTH_RESPONSES
 
-router = APIRouter(prefix="/api/v1/users", tags=["users"])
+router = APIRouter(prefix="/api/v1/users", tags=["users"], responses=BEARER_AUTH_RESPONSES)
 
 
 class UserResponse(BaseModel):

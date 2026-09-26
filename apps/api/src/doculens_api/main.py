@@ -20,6 +20,7 @@ from doculens.application.conversations import ConversationService
 from doculens.application.documents import DocumentService
 from doculens.application.embeddings import EmbeddingProvider
 from doculens.application.health import HealthProbe, ReadinessService
+from doculens.application.ingestion import DocumentIntakeService
 from doculens.application.jobs import DocumentJobDispatcher
 from doculens.application.llm import LLMProvider
 from doculens.application.ratelimit import RateLimiter
@@ -28,6 +29,7 @@ from doculens.domain.auth import PasswordPolicy
 from doculens.domain.time import utc_now
 from doculens.infrastructure.config import load_settings
 from doculens.infrastructure.logging import configure_logging
+from doculens.infrastructure.pdf import build_upload_limits
 from doculens.infrastructure.persistence.database import Database, DatabaseProbe
 from doculens.infrastructure.queue import JobQueueProbe, build_job_queue
 from doculens.infrastructure.rag import build_rag_service
@@ -49,7 +51,10 @@ OPENAPI_TAGS = [
     {"name": "auth", "description": "Registration, login, token refresh and logout."},
     {"name": "users", "description": "The authenticated user's account."},
     {"name": "collections", "description": "Groupings of the user's documents."},
-    {"name": "documents", "description": "Document metadata and processing status."},
+    {
+        "name": "documents",
+        "description": "Upload, inspect, update, delete, reprocess and re-index documents.",
+    },
     {"name": "conversations", "description": "Conversations and their cited messages."},
 ]
 
@@ -110,6 +115,7 @@ def create_app(
             password_policy=PasswordPolicy(min_length=resolved.password_min_length),
         ),
     )
+    jobs = DocumentJobDispatcher(queue=job_queue)
     components = AppComponents(
         settings=resolved,
         database=database,
@@ -122,7 +128,13 @@ def create_app(
             unit_of_work=unit_of_work,
             vectors=vector_store,
             storage=object_storage,
-            jobs=DocumentJobDispatcher(queue=job_queue),
+            jobs=jobs,
+        ),
+        intake=DocumentIntakeService(
+            unit_of_work=unit_of_work,
+            storage=object_storage,
+            limits=build_upload_limits(resolved),
+            jobs=jobs,
         ),
         conversations=ConversationService(unit_of_work=unit_of_work),
         rag=build_rag_service(

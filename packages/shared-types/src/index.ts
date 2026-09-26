@@ -18,7 +18,7 @@ export interface ApiErrorBody {
   message: string;
   /** Correlation identifier echoed from the request-ID response header (§36). */
   request_id: string;
-  /** Present only for request validation failures (`VALIDATION_ERROR`). */
+  /** Present for request validation failures and selected domain conflicts (e.g. duplicate upload). */
   details?: ApiErrorDetail[];
 }
 

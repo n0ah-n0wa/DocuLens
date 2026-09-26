@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx2 import Response
 
 from doculens.domain.chunking import chunk_id
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
@@ -16,7 +17,10 @@ from doculens.domain.ids import new_id
 from doculens.domain.storage import PDF_MIME_TYPE, document_object_key
 from doculens.domain.vectors import VectorMetadata, VectorRecord, vector_id_for
 from doculens.testing.factories import Factories
-from doculens.testing.fakes import InMemoryStore
+from doculens.testing.fakes import InMemoryStore, InMemoryUnitOfWork
+from doculens.testing.pdfs import pdf_with_pages
+from doculens_api.main import create_app
+from doculens_api.settings import ApiSettings
 
 if TYPE_CHECKING:
     from doculens_api.dependencies import AppComponents
@@ -39,6 +43,11 @@ class Owner:
 @pytest.fixture
 def owner(client: TestClient, store: InMemoryStore) -> Owner:
     return Owner(client, store)
+
+
+@pytest.fixture
+def sample_pdf() -> bytes:
+    return pdf_with_pages(["hello from upload"])
 
 
 def _page(document_id: UUID, text: str = "evidence") -> DocumentPage:
@@ -117,6 +126,120 @@ def _seed(
         chunk = _chunk(document.id, page.id)
         store.chunks[chunk.id] = chunk
     return document
+
+
+def _upload(
+    client: TestClient,
+    owner: Owner,
+    data: bytes,
+    *,
+    filename: str = "report.pdf",
+    content_type: str = PDF_MIME_TYPE,
+    collection_id: UUID | None = None,
+) -> Response:
+    form: dict[str, str] = {}
+    if collection_id is not None:
+        form["collection_id"] = str(collection_id)
+    return client.post(
+        "/api/v1/documents",
+        headers=owner.headers,
+        files={"file": (filename, data, content_type)},
+        data=form,
+    )
+
+
+def test_upload_creates_an_uploaded_document(
+    client: TestClient, owner: Owner, store: InMemoryStore, app: FastAPI, sample_pdf: bytes
+) -> None:
+    collection_id = UUID(
+        client.post("/api/v1/collections", json={"name": "Legal"}, headers=owner.headers).json()[
+            "id"
+        ]
+    )
+
+    response = _upload(client, owner, sample_pdf, collection_id=collection_id)
+
+    assert response.status_code == HTTPStatus.CREATED, response.text
+    body = response.json()
+    assert body["filename"] == "report.pdf"
+    assert body["mime_type"] == PDF_MIME_TYPE
+    assert body["file_size"] == len(sample_pdf)
+    assert body["processing_status"] == "UPLOADED"
+    assert body["collection_id"] == str(collection_id)
+    assert "storage_key" not in body
+    assert "content_hash" not in body
+    assert "owner_id" not in body
+
+    document = store.documents[UUID(body["id"])]
+    assert document.owner_id == owner.id
+    assert document.processing_status is ProcessingStatus.UPLOADED
+    components: AppComponents = app.state.components
+    stored = asyncio.run(components.object_storage.get(document.storage_key))
+    assert stored.data == sample_pdf
+
+
+def test_upload_rejects_non_pdf_and_duplicates(
+    client: TestClient, owner: Owner, sample_pdf: bytes
+) -> None:
+    refused_type = _upload(
+        client, owner, sample_pdf, filename="notes.txt", content_type="text/plain"
+    )
+    assert refused_type.status_code == HTTPStatus.BAD_REQUEST
+    assert refused_type.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+
+    refused_sig = _upload(client, owner, b"not a pdf", filename="fake.pdf")
+    assert refused_sig.status_code == HTTPStatus.BAD_REQUEST
+    assert refused_sig.json()["error"]["code"] == "INVALID_FILE_SIGNATURE"
+
+    first = _upload(client, owner, sample_pdf)
+    assert first.status_code == HTTPStatus.CREATED
+    duplicate = _upload(client, owner, sample_pdf, filename="copy.pdf")
+    assert duplicate.status_code == HTTPStatus.CONFLICT
+    assert duplicate.json()["error"]["code"] == "DUPLICATE_DOCUMENT"
+    assert duplicate.json()["error"]["details"][0]["location"] == "existing_document_id"
+    assert duplicate.json()["error"]["details"][0]["message"] == first.json()["id"]
+
+    client.post("/api/v1/auth/register", json={"email": "other@example.com", "password": PASSWORD})
+    login = client.post(
+        "/api/v1/auth/login", json={"email": "other@example.com", "password": PASSWORD}
+    )
+    other_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    other = client.post(
+        "/api/v1/documents",
+        headers=other_headers,
+        files={"file": ("report.pdf", sample_pdf, PDF_MIME_TYPE)},
+    )
+    assert other.status_code == HTTPStatus.CREATED
+
+
+def test_upload_into_a_foreign_collection_is_not_found(
+    client: TestClient, owner: Owner, sample_pdf: bytes
+) -> None:
+    client.post("/api/v1/auth/register", json={"email": "bob@example.com", "password": PASSWORD})
+    login = client.post(
+        "/api/v1/auth/login", json={"email": "bob@example.com", "password": PASSWORD}
+    )
+    bob = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    bob_collection = client.post("/api/v1/collections", json={"name": "Bob's"}, headers=bob).json()[
+        "id"
+    ]
+
+    response = _upload(client, owner, sample_pdf, collection_id=UUID(bob_collection))
+    assert response.status_code == HTTPStatus.NOT_FOUND
+    assert response.json()["error"]["code"] == "COLLECTION_NOT_FOUND"
+
+
+def test_upload_rejects_oversize_files(
+    settings: ApiSettings, store: InMemoryStore, sample_pdf: bytes
+) -> None:
+    tight = settings.model_copy(update={"max_file_size_mb": 1})
+    app = create_app(tight, probes=[], unit_of_work_factory=lambda: InMemoryUnitOfWork(store))
+    with TestClient(app) as client:
+        owner = Owner(client, store)
+        oversized = sample_pdf + b"x" * (2 * 1024 * 1024)
+        response = _upload(client, owner, oversized)
+    assert response.status_code == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+    assert response.json()["error"]["code"] == "FILE_TOO_LARGE"
 
 
 def test_documents_are_listed_inspected_renamed_moved_and_searched(

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from http import HTTPStatus
-from typing import Any, Self
+from typing import Self
 from uuid import UUID
 
 from fastapi import APIRouter, Response
@@ -15,12 +15,13 @@ from doculens.domain.collections import (
 )
 from doculens.domain.common import UNSET
 from doculens_api.dependencies import CollectionServiceDep, CurrentUserDep
+from doculens_api.errors import BAD_REQUEST_RESPONSE, BEARER_AUTH_RESPONSES, NOT_FOUND_RESPONSE
 
-router = APIRouter(prefix="/api/v1/collections", tags=["collections"])
-
-NOT_FOUND: dict[int | str, dict[str, Any]] = {
-    HTTPStatus.NOT_FOUND: {"description": "No such collection for this user."}
-}
+router = APIRouter(
+    prefix="/api/v1/collections",
+    tags=["collections"],
+    responses=BEARER_AUTH_RESPONSES,
+)
 
 
 class CollectionResponse(BaseModel):
@@ -53,7 +54,12 @@ class UpdateCollectionRequest(BaseModel):
     description: str | None = Field(default=None, max_length=MAX_COLLECTION_DESCRIPTION_LENGTH)
 
 
-@router.post("", status_code=HTTPStatus.CREATED, summary="Create a collection")
+@router.post(
+    "",
+    status_code=HTTPStatus.CREATED,
+    summary="Create a collection",
+    responses=BAD_REQUEST_RESPONSE,
+)
 async def create_collection(
     body: CreateCollectionRequest, user: CurrentUserDep, collections: CollectionServiceDep
 ) -> CollectionResponse:
@@ -70,14 +76,22 @@ async def list_collections(
     ]
 
 
-@router.get("/{collection_id}", summary="Inspect a collection", responses=NOT_FOUND)
+@router.get(
+    "/{collection_id}",
+    summary="Inspect a collection",
+    responses=NOT_FOUND_RESPONSE,
+)
 async def get_collection(
     collection_id: UUID, user: CurrentUserDep, collections: CollectionServiceDep
 ) -> CollectionResponse:
     return CollectionResponse.from_collection(await collections.get(user.id, collection_id))
 
 
-@router.patch("/{collection_id}", summary="Rename or describe a collection", responses=NOT_FOUND)
+@router.patch(
+    "/{collection_id}",
+    summary="Rename or describe a collection",
+    responses={**NOT_FOUND_RESPONSE, **BAD_REQUEST_RESPONSE},
+)
 async def update_collection(
     collection_id: UUID,
     body: UpdateCollectionRequest,
@@ -97,7 +111,7 @@ async def update_collection(
     "/{collection_id}",
     status_code=HTTPStatus.NO_CONTENT,
     summary="Delete a collection (its documents and conversations are kept, detached)",
-    responses=NOT_FOUND,
+    responses=NOT_FOUND_RESPONSE,
 )
 async def delete_collection(
     collection_id: UUID, user: CurrentUserDep, collections: CollectionServiceDep

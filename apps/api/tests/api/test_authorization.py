@@ -191,14 +191,19 @@ def test_every_resource_route_requires_authentication(client: TestClient, seed: 
         ("GET", "/api/v1/collections", None, ""),
         ("POST", "/api/v1/collections", {"name": "x"}, ""),
         ("GET", "/api/v1/documents", None, ""),
+        ("POST", "/api/v1/documents", None, ""),
         ("DELETE", f"/api/v1/documents/{seed.document_id}", None, ""),
         ("POST", f"/api/v1/documents/{seed.document_id}/reprocess", None, ""),
         ("POST", f"/api/v1/documents/{seed.document_id}/reindex", None, ""),
         ("GET", "/api/v1/conversations", None, ""),
         ("POST", "/api/v1/conversations", {"title": "x"}, ""),
+        ("GET", "/api/v1/users/me", None, ""),
     ]
     for method, path, body, _ in routes:
-        anonymous = client.request(method, path, json=body)
+        if method == "POST" and path == "/api/v1/documents":
+            anonymous = client.post(path, files={"file": ("x.pdf", b"%PDF-1.4", "application/pdf")})
+        else:
+            anonymous = client.request(method, path, json=body)
         assert anonymous.status_code == HTTPStatus.UNAUTHORIZED, (method, path)
         assert anonymous.json()["error"]["code"] == "UNAUTHENTICATED"
         assert anonymous.headers["WWW-Authenticate"] == "Bearer"

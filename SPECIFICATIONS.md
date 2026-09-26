@@ -1037,12 +1037,14 @@ POST   /api/v1/documents/{id}/reindex
 
 GET    /api/v1/collections
 POST   /api/v1/collections
+GET    /api/v1/collections/{id}
 PATCH  /api/v1/collections/{id}
 DELETE /api/v1/collections/{id}
 
 GET    /api/v1/conversations
 POST   /api/v1/conversations
 GET    /api/v1/conversations/{id}
+PATCH  /api/v1/conversations/{id}
 DELETE /api/v1/conversations/{id}
 
 POST   /api/v1/conversations/{id}/messages

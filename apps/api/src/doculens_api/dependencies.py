@@ -17,6 +17,7 @@ from doculens.application.collections import CollectionService
 from doculens.application.conversations import ConversationService
 from doculens.application.documents import DocumentService
 from doculens.application.health import ReadinessService
+from doculens.application.ingestion import DocumentIntakeService
 from doculens.application.rag import RagService
 from doculens.application.ratelimit import RateLimiter
 from doculens.application.storage import ObjectStorage, OwnerScopedObjectStorage
@@ -41,6 +42,7 @@ class AppComponents:
     auth: AuthService
     collections: CollectionService
     documents: DocumentService
+    intake: DocumentIntakeService
     conversations: ConversationService
     rag: RagService
     rate_limiter: RateLimiter
@@ -70,6 +72,10 @@ def get_collection_service(request: Request) -> CollectionService:
 
 def get_document_service(request: Request) -> DocumentService:
     return components_of(request).documents
+
+
+def get_document_intake(request: Request) -> DocumentIntakeService:
+    return components_of(request).intake
 
 
 def get_conversation_service(request: Request) -> ConversationService:
@@ -118,6 +124,7 @@ ReadinessDep = Annotated[ReadinessService, Depends(get_readiness_service)]
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 CollectionServiceDep = Annotated[CollectionService, Depends(get_collection_service)]
 DocumentServiceDep = Annotated[DocumentService, Depends(get_document_service)]
+DocumentIntakeDep = Annotated[DocumentIntakeService, Depends(get_document_intake)]
 ConversationServiceDep = Annotated[ConversationService, Depends(get_conversation_service)]
 RagServiceDep = Annotated[RagService, Depends(get_rag_service)]
 RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
