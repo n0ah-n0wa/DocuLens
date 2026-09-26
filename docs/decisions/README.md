@@ -33,12 +33,12 @@ that later readers understand why the system looks the way it does.
 | [ADR-003](ADR-003-chunking-strategy.md)           | Chunking strategy                              | Accepted               | OQ-16 provisional                                |
 | [ADR-004](ADR-004-embedding-provider.md)          | Embedding provider                             | Accepted (provisional) | OQ-17: port and first adapter fixed, vendor open |
 | [ADR-005](ADR-005-llm-provider.md)                | LLM provider                                   | Accepted (provisional) | OQ-17: port and first adapter fixed, vendor open |
-| ADR-006                                           | Async processing architecture                  | Pending                | OQ-2                                             |
+| [ADR-006](ADR-006-async-processing.md)            | Async processing architecture                  | Accepted               | OQ-2 open; OQ-13, OQ-27 provisional              |
 | [ADR-007](ADR-007-authentication-strategy.md)     | Authentication strategy                        | Accepted               | OQ-19 (token storage) still open                 |
 | ADR-008                                           | AWS deployment architecture                    | Pending                | OQ-1, OQ-3, OQ-3b, OQ-19, OQ-23                  |
 | ADR-009                                           | RAG evaluation strategy                        | Pending                | OQ-22                                            |
 | [ADR-010](ADR-010-repository-tooling.md)          | Repository tooling                             | Accepted               | —                                                |
-| [ADR-011](ADR-011-job-enqueue-consistency.md)     | Document row / job enqueue consistency         | Proposed               | OQ-27 (decision requested)                       |
+| [ADR-011](ADR-011-job-enqueue-consistency.md)     | Document row / job enqueue consistency         | Accepted (provisional) | OQ-27 via ADR-006 option A                       |
 | [ADR-012](ADR-012-lambda-database-connections.md) | Database connection management for Lambda      | Proposed               | OQ-28 (decision requested)                       |
 | [ADR-013](ADR-013-authorization-responses.md)     | Resource authorization and not-found responses | Accepted               | —                                                |
 | [ADR-014](ADR-014-object-storage.md)              | Object storage adapters                        | Accepted               | OQ-13 resolved; OQ-3 still open                  |

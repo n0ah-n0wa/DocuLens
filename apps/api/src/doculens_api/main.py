@@ -20,6 +20,7 @@ from doculens.application.conversations import ConversationService
 from doculens.application.documents import DocumentService
 from doculens.application.embeddings import EmbeddingProvider
 from doculens.application.health import HealthProbe, ReadinessService
+from doculens.application.jobs import DocumentJobDispatcher
 from doculens.application.llm import LLMProvider
 from doculens.application.ratelimit import RateLimiter
 from doculens.application.unit_of_work import UnitOfWorkFactory
@@ -28,6 +29,7 @@ from doculens.domain.time import utc_now
 from doculens.infrastructure.config import load_settings
 from doculens.infrastructure.logging import configure_logging
 from doculens.infrastructure.persistence.database import Database, DatabaseProbe
+from doculens.infrastructure.queue import JobQueueProbe, build_job_queue
 from doculens.infrastructure.rag import build_rag_service
 from doculens.infrastructure.ratelimit import InMemoryRateLimiter
 from doculens.infrastructure.security.passwords import Argon2PasswordHasher
@@ -81,9 +83,11 @@ def create_app(
     database = Database(resolved)
     object_storage = build_object_storage(resolved)
     vector_store = build_vector_store(resolved)
+    job_queue = build_job_queue(resolved)
     default_probes: list[HealthProbe] = [
         DatabaseProbe(database),
         ObjectStorageProbe(object_storage),
+        JobQueueProbe(job_queue),
         *([VectorStoreProbe(vector_store)] if isinstance(vector_store, ChromaVectorStore) else []),
     ]
     readiness_probes = probes if probes is not None else default_probes
@@ -115,7 +119,10 @@ def create_app(
         auth=auth_service,
         collections=CollectionService(unit_of_work=unit_of_work, vectors=vector_store),
         documents=DocumentService(
-            unit_of_work=unit_of_work, vectors=vector_store, storage=object_storage
+            unit_of_work=unit_of_work,
+            vectors=vector_store,
+            storage=object_storage,
+            jobs=DocumentJobDispatcher(queue=job_queue),
         ),
         conversations=ConversationService(unit_of_work=unit_of_work),
         rag=build_rag_service(

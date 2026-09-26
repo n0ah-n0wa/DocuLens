@@ -1,8 +1,9 @@
 # ADR-011 — Consistency between the document row and the processing job
 
-**Status:** Proposed (blocks `OQ-27`; not binding until accepted)
-**Date:** 2026-09-19
-**Specification references:** §12, §46, §48, §49, §66, §67
+**Status:** Accepted (2026-09-26) · **Resolves provisionally:** OQ-27 · **Refs:** §12, §46, §48, §49, §66, §67
+
+Option A (commit then enqueue, reconcile stragglers) is in force via
+[ADR-006](ADR-006-async-processing.md). This record keeps the alternatives for readers.
 
 ## Context
 

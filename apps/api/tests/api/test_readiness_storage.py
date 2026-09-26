@@ -32,7 +32,7 @@ def test_ready_reports_object_storage_and_the_database(
 
     assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE  # the database is unreachable
     checks = {check["name"]: check["status"] for check in response.json()["checks"]}
-    assert checks == {"postgres": "fail", "object-storage": "pass"}
+    assert checks == {"postgres": "fail", "object-storage": "pass", "job-queue": "pass"}
     assert (tmp_path / "objects" / "objects").is_dir()
 
 

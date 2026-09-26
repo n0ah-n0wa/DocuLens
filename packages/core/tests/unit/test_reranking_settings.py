@@ -32,6 +32,10 @@ DEPLOYED = {
     "embedding_provider": EmbeddingProviderKind.OPENAI,
     "llm_provider": LLMProviderKind.OPENAI,
     "chroma_url": "https://chroma.internal:8000",
+    "queue_backend": "sqs",
+    "queue_sqs_url": "https://sqs.eu-central-1.amazonaws.com/123456789012/doculens",
+    "queue_sqs_dlq_url": "https://sqs.eu-central-1.amazonaws.com/123456789012/doculens-dlq",
+    "queue_sqs_region": "eu-central-1",
 }
 
 

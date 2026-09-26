@@ -24,6 +24,9 @@ def test_module_entrypoint_runs_and_exits_zero() -> None:
             "APP_ENV": "local",
             "LOG_FORMAT": "json",
             "DATABASE_URL": "postgresql+asyncpg://u:p@127.0.0.1:1/doculens",
+            "QUEUE_BACKEND": "memory",
+            "QUEUE_POLL_INTERVAL_SECONDS": "0.01",
+            "DOCULENS_WORKER_MAX_IDLE_POLLS": "1",
         },
     )
 

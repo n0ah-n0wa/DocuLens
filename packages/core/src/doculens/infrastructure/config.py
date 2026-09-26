@@ -85,6 +85,14 @@ class VectorStoreKind(StrEnum):
     MEMORY = "memory"
 
 
+class QueueBackend(StrEnum):
+    """Job transport selected by ``QUEUE_BACKEND`` (§48, ADR-006)."""
+
+    MEMORY = "memory"
+    REDIS = "redis"
+    SQS = "sqs"
+
+
 class ConfigurationError(RuntimeError):
     """Raised at start-up when the environment does not describe a valid configuration."""
 
@@ -242,6 +250,46 @@ class CoreSettings(BaseSettings):
         ge=1,
         le=10_000,
         description="Chunks embedded and written per window; bounds worker memory (§53).",
+    )
+
+    queue_backend: QueueBackend = Field(
+        default=QueueBackend.MEMORY,
+        description="memory (tests), redis (local, OQ-13) or sqs (deployed, §48).",
+    )
+    redis_url: str | None = Field(
+        default="redis://localhost:6379/0",
+        description="Redis URL for the local queue and future shared rate limits (§47).",
+    )
+    queue_name: str = Field(
+        default="doculens-documents",
+        pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$",
+        description="Logical queue name (Redis key prefix or documentation label).",
+    )
+    queue_visibility_timeout_seconds: float = Field(
+        default=300.0, gt=0, le=43_200, description="Lease duration while a worker holds a job."
+    )
+    queue_processing_timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        le=43_200,
+        description=(
+            "Hard cap for one process() call; defaults to 80% of visibility so work finishes "
+            "before the lease can be reclaimed (retry-storm guard)."
+        ),
+    )
+    queue_max_attempts: int = Field(
+        default=5, ge=1, le=100, description="Bounded retries before dead-lettering (§66)."
+    )
+    queue_backoff_base_seconds: float = Field(default=2.0, gt=0, le=3_600)
+    queue_backoff_max_seconds: float = Field(default=300.0, gt=0, le=86_400)
+    queue_poll_interval_seconds: float = Field(
+        default=1.0, gt=0, le=60, description="Idle sleep between empty polls."
+    )
+    queue_sqs_url: str | None = Field(default=None, description="Primary SQS queue URL.")
+    queue_sqs_dlq_url: str | None = Field(default=None, description="SQS dead-letter queue URL.")
+    queue_sqs_region: str | None = Field(default=None, pattern=r"^[a-z0-9-]{1,32}$")
+    queue_sqs_endpoint_url: str | None = Field(
+        default=None, description="Custom SQS endpoint (LocalStack); unset for AWS."
     )
 
     retrieval_strategy: RetrievalStrategy = Field(
@@ -434,6 +482,24 @@ class CoreSettings(BaseSettings):
             problems.append("LOG_FORMAT must be json (structured logging is required, §50)")
         if self.database_echo:
             problems.append("DATABASE_ECHO must be false (statement logging can expose data, §68)")
+        if self.queue_backend is not QueueBackend.SQS:
+            problems.append("QUEUE_BACKEND must be sqs (AWS-native processing, §48)")
+        if self.queue_sqs_url is None:
+            problems.append("QUEUE_SQS_URL is required when deployed")
+        if self.queue_sqs_dlq_url is None:
+            problems.append(
+                "QUEUE_SQS_DLQ_URL is required when deployed (poison and exhausted jobs)"
+            )
+        if self.queue_sqs_region is None:
+            problems.append("QUEUE_SQS_REGION is required when deployed")
+        if (
+            self.queue_processing_timeout_seconds is not None
+            and self.queue_processing_timeout_seconds >= self.queue_visibility_timeout_seconds
+        ):
+            problems.append(
+                "QUEUE_PROCESSING_TIMEOUT_SECONDS must be less than "
+                "QUEUE_VISIBILITY_TIMEOUT_SECONDS"
+            )
         return problems
 
     def _deployed_storage_problems(self) -> list[str]:

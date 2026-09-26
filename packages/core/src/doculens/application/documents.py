@@ -14,6 +14,7 @@ next call finishes the work. Citations keep ``document_id`` and lose only ``chun
 
 import logging
 from dataclasses import replace
+from typing import Protocol
 from uuid import UUID
 
 from doculens.application.auth import Clock
@@ -39,6 +40,12 @@ from doculens.domain.vectors import VectorStoreError, VectorStoreUnavailableErro
 logger = logging.getLogger(__name__)
 
 
+class DocumentJobSink(Protocol):
+    async def enqueue_quietly(
+        self, document_id: UUID, *, request_id: str | None = None
+    ) -> object: ...
+
+
 def clean_filename(filename: str) -> str:
     cleaned = clean_label(filename, field="filename", max_length=MAX_FILENAME_LENGTH)
     if "/" in cleaned or "\\" in cleaned or cleaned in {".", ".."}:
@@ -59,11 +66,13 @@ class DocumentService:
         unit_of_work: UnitOfWorkFactory,
         vectors: VectorStore | None = None,
         storage: ObjectStorage | None = None,
+        jobs: DocumentJobSink | None = None,
         clock: Clock = utc_now,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._vectors = vectors
         self._storage = storage
+        self._jobs = jobs
         self._clock = clock
 
     async def list_for_owner(
@@ -213,6 +222,8 @@ class DocumentService:
             ):
                 raise InvalidStatusTransitionError
             await uow.commit()
+        if self._jobs is not None:
+            await self._jobs.enqueue_quietly(document_id)
         logger.info(
             "document processing restarted",
             extra={

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from uuid import UUID, uuid4
 
@@ -24,6 +25,16 @@ def test_main_exits_cleanly_and_logs_a_structured_start_event(
     monkeypatch.setenv("APP_ENV", "local")
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@127.0.0.1:1/doculens")
 
+    async def fake_run(
+        settings: CoreSettings,
+        *,
+        stop: asyncio.Event | None = None,
+        max_idle_polls: int | None = None,
+    ) -> None:
+        del settings, stop, max_idle_polls
+
+    monkeypatch.setattr(entrypoint, "run_worker", fake_run)
+
     exit_code = main([])
 
     assert exit_code == 0
@@ -31,7 +42,8 @@ def test_main_exits_cleanly_and_logs_a_structured_start_event(
     (start,) = [entry for entry in entries if entry.get("operation") == "worker.start"]
     assert start["service"] == "doculens-worker"
     assert start["version"] == __version__
-    assert start["handlers_registered"] == 0
+    assert start["handlers_registered"] == 1
+    assert start["queue_backend"] == "memory"
 
 
 def test_invalid_configuration_fails_the_process_with_a_clear_message(

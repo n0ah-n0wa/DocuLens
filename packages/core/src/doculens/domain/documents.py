@@ -37,7 +37,9 @@ class ProcessingStatus(StrEnum):
 
 
 ALLOWED_TRANSITIONS: Mapping[ProcessingStatus, frozenset[ProcessingStatus]] = {
-    ProcessingStatus.UPLOADED: frozenset({ProcessingStatus.VALIDATING, ProcessingStatus.DELETING}),
+    ProcessingStatus.UPLOADED: frozenset(
+        {ProcessingStatus.VALIDATING, ProcessingStatus.FAILED, ProcessingStatus.DELETING}
+    ),
     ProcessingStatus.VALIDATING: frozenset(
         {ProcessingStatus.EXTRACTING, ProcessingStatus.FAILED, ProcessingStatus.DELETING}
     ),

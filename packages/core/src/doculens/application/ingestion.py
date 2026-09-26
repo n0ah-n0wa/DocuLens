@@ -64,6 +64,7 @@ from doculens.domain.ingestion import (
     ordered_pages,
     validate_upload,
 )
+from doculens.domain.jobs import JobPermanentlyFailedError
 from doculens.domain.storage import ObjectNotFoundError, content_hash, document_object_key
 from doculens.domain.time import utc_now
 from doculens.domain.vectors import VectorMetadata, VectorStoreError, vector_id_for
@@ -71,6 +72,14 @@ from doculens.domain.vectors import VectorMetadata, VectorStoreError, vector_id_
 logger = logging.getLogger(__name__)
 
 Clock = Callable[[], datetime]
+
+
+class DocumentJobSink(Protocol):
+    """Enqueue side of the job dispatcher; kept as a protocol to avoid an import cycle."""
+
+    async def enqueue_quietly(
+        self, document_id: UUID, *, request_id: str | None = None
+    ) -> object: ...
 
 
 class PdfExtractor(Protocol):
@@ -92,11 +101,13 @@ class DocumentIntakeService:
         unit_of_work: UnitOfWorkFactory,
         storage: ObjectStorage,
         limits: UploadLimits,
+        jobs: DocumentJobSink | None = None,
         clock: Clock = utc_now,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._storage = storage
         self._limits = limits
+        self._jobs = jobs
         self._clock = clock
 
     async def accept(
@@ -151,6 +162,8 @@ class DocumentIntakeService:
         except BaseException:
             await self._discard_quietly(key)
             raise
+        if self._jobs is not None:
+            await self._jobs.enqueue_quietly(document.id)
         logger.info(
             "document accepted",
             extra={
@@ -290,6 +303,33 @@ class DocumentProcessor:
         else:
             outcome = ProcessingOutcome.PROCESSED
         return ProcessingReport(document_id, outcome, document.processing_status, tuple(stages))
+
+    async def fail_permanently(self, document_id: UUID, *, reason: str) -> ProcessingReport:
+        """Mark a mid-pipeline document ``FAILED`` after the retry budget is exhausted (§51).
+
+        Terminal states (``READY``, ``FAILED``, deletion) are left alone so a late dead-letter
+        cannot overwrite a successful concurrent run.
+        """
+        async with self._unit_of_work() as uow:
+            document = await uow.documents.get_for_processing(document_id)
+        if document is None:
+            return ProcessingReport(document_id, ProcessingOutcome.SKIPPED, None)
+        if document.processing_status in (
+            ProcessingStatus.READY,
+            ProcessingStatus.FAILED,
+            ProcessingStatus.DELETING,
+            ProcessingStatus.DELETED,
+        ):
+            return ProcessingReport(
+                document_id, ProcessingOutcome.NO_OP, document.processing_status
+            )
+        try:
+            failed = await self._fail(
+                document, JobPermanentlyFailedError(diagnostics=reason[:2_000])
+            )
+        except _LostRaceError:
+            return ProcessingReport(document_id, ProcessingOutcome.CONCURRENT, None)
+        return ProcessingReport(document_id, ProcessingOutcome.FAILED, failed.processing_status)
 
     # -- stages ------------------------------------------------------------------------------------
 
@@ -642,6 +682,7 @@ def _unexpected(error: Exception) -> PdfRejectedError:
 
 __all__ = [
     "DocumentIntakeService",
+    "DocumentJobSink",
     "DocumentLimitReachedError",
     "DocumentProcessor",
     "DuplicateDocumentError",

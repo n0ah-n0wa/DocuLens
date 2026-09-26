@@ -49,7 +49,7 @@ def test_readiness_checks_the_real_database_by_default(settings: ApiSettings) ->
 
     assert response.status_code == HTTPStatus.SERVICE_UNAVAILABLE
     checks = {check["name"]: check for check in response.json()["checks"]}
-    assert set(checks) == {"postgres", "object-storage"}
+    assert set(checks) == {"postgres", "object-storage", "job-queue"}
     assert checks["postgres"]["status"] == "fail"
     assert checks["postgres"]["detail"] in {"failed", "timed out"}
 

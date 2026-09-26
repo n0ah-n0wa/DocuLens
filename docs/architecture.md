@@ -379,10 +379,12 @@ flowchart LR
 
 ## 8. Asynchronous processing
 
-**Implemented:** a separate worker deployable with its own image and entrypoint; no queue consumer
-or job handlers yet.
+**Implemented:** asynchronous job queue (memory / Redis / SQS), `DocumentJobDispatcher` on the
+API after commit (ADR-011), `DocumentJobWorker` with visibility leases, bounded exponential
+backoff, dead-lettering that marks the document `FAILED`, processing timeouts inside the lease,
+poison-message handling, and idempotent CAS processing (ADR-006, ADR-015).
 
-**Planned** (§12, §46–§49, §66–§67):
+**Planned** (reconciliation sweep for orphaned `UPLOADED` rows — ADR-011):
 
 ```mermaid
 sequenceDiagram

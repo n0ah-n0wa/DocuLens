@@ -13,6 +13,7 @@ from doculens.infrastructure.config import (
     Environment,
     LLMProviderKind,
     LogLevel,
+    QueueBackend,
     StorageBackend,
     StorageEncryption,
 )
@@ -67,6 +68,10 @@ def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
         embedding_provider=EmbeddingProviderKind.OPENAI,
         llm_provider=LLMProviderKind.OPENAI,
         chroma_url="https://chroma.internal:8000",
+        queue_backend=QueueBackend.SQS,
+        queue_sqs_url="https://sqs.eu-central-1.amazonaws.com/123456789012/doculens",
+        queue_sqs_dlq_url="https://sqs.eu-central-1.amazonaws.com/123456789012/doculens-dlq",
+        queue_sqs_region="eu-central-1",
     )
     opted_in = ApiSettings(
         _env_file=None,
@@ -81,6 +86,10 @@ def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
         embedding_provider=EmbeddingProviderKind.OPENAI,
         llm_provider=LLMProviderKind.OPENAI,
         chroma_url="https://chroma.internal:8000",
+        queue_backend=QueueBackend.SQS,
+        queue_sqs_url="https://sqs.eu-central-1.amazonaws.com/123456789012/doculens",
+        queue_sqs_dlq_url="https://sqs.eu-central-1.amazonaws.com/123456789012/doculens-dlq",
+        queue_sqs_region="eu-central-1",
     )
 
     assert local.docs_enabled is True
