@@ -14,6 +14,7 @@
     "lint": "pnpm --recursive --if-present run lint",
     "typecheck": "pnpm --recursive --if-present run typecheck",
     "build": "pnpm --recursive --if-present run build",
+    "test:web": "pnpm --filter @doculens/web run test",
     "test:e2e": "pnpm --filter @doculens/web run test:e2e"
   },
   "devDependencies": {

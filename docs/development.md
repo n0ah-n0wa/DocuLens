@@ -31,7 +31,7 @@ pnpm install --frozen-lockfile
 pnpm --filter @doculens/web exec playwright install chromium
 
 uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest
-pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run build
+pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:web && pnpm run build
 pnpm run test:e2e              # after pnpm run build
 ```
 

@@ -9,5 +9,7 @@ minimumReleaseAge: 1440
 
 # Dependency lifecycle scripts are blocked by default; list the ones explicitly allowed.
 # unrs-resolver: native module resolver used by eslint-config-next's import plugin.
+# esbuild: native binary used by Vitest (via Vite) for transforming tests.
 allowBuilds:
+  esbuild: true
   unrs-resolver: true

@@ -56,8 +56,8 @@ Principles the specification fixes (§1, §4, §90):
 | Core                   | `packages/core`            | `doculens-core` / `doculens`          | domain, application and infrastructure layers                       |
 | API                    | `apps/api`                 | `doculens-api` / `doculens_api`       | FastAPI: health, auth, users, collections, documents, conversations |
 | Worker                 | `services/document-worker` | `doculens-worker` / `doculens_worker` | queue-driven interface layer (entrypoint only)                      |
-| Web                    | `apps/web`                 | `@doculens/web`                       | Next.js application (placeholder page)                              |
-| Shared contracts       | `packages/shared-types`    | `@doculens/shared-types`              | TypeScript API contracts (error envelope only)                      |
+| Web                    | `apps/web`                 | `@doculens/web`                       | Next.js app shell (auth screens, authenticated layout, dashboard)   |
+| Shared contracts       | `packages/shared-types`    | `@doculens/shared-types`              | TypeScript API contracts (error envelope, auth tokens, user)        |
 | Infrastructure         | `infrastructure/terraform` | —                                     | staging and production roots (no resources yet)                     |
 | Images and local stack | `docker/`                  | —                                     | API and worker images; PostgreSQL, Redis, Chroma                    |
 
@@ -123,10 +123,15 @@ ERROR / EMPTY` states, responsive layout and WCAG-oriented accessibility.
   The transport for that (serving the PDF) is part of `OQ-3`, because the API Gateway and Lambda
   payload limits that constrain uploads constrain downloads equally.
 
+**Implemented (shell):** login and registration screens, an authenticated layout with a dashboard
+placeholder, a central API client with §35 error parsing and one-shot refresh retry, and Vitest
+coverage for that client layer (ADR-021). Document upload, collections and chat UI are not built
+yet.
+
 **Pending:**
 
-- `OQ-19` — frontend hosting/rendering mode and where tokens are stored, which determines cookie,
-  CORS and CSRF design.
+- `OQ-19` — frontend hosting/rendering mode and production token transport (cookie refresh);
+  provisional in-memory access + `sessionStorage` refresh until then (ADR-021).
 - `OQ-3` — upload and download paths under API Gateway and Lambda payload limits.
 - `OQ-3b` — whether answer streaming (Server-Sent Events, §44) can pass through API Gateway.
 - `OQ-10` — separate metadata search versus semantic search endpoints.
@@ -531,7 +536,7 @@ cannot exhaust memory.
 **Planned:** the Redis-backed limiter store (§47) replacing the in-process one so limits are
 fleet-wide; trusting proxy forwarding headers for the client address once `OQ-19` fixes the edge.
 
-**Pending:** `OQ-19` (token storage in the browser and the resulting CSRF requirements), `OQ-24`
+**Pending:** `OQ-19` (production cookie refresh / CSRF; provisional sessionStorage refresh in ADR-021), `OQ-24`
 (account deletion, email verification, password reset are not specified).
 
 ---
@@ -728,21 +733,21 @@ Trust boundaries fixed by the specification (§22, §53, §68):
    public access; secrets only via environment and Secrets Manager; `.env` files are git-ignored
    and secret scanning runs in CI.
 
-| Control                                             | Status          |
-| --------------------------------------------------- | --------------- |
-| Secret scanning, dependency audits, image scanning  | Implemented     |
-| Non-root, minimal, pinned container images          | Implemented     |
-| Local services bound to loopback only               | Implemented     |
-| Generated object keys, hashed and encrypted objects | Implemented     |
-| Input validation, upload validation                 | Planned         |
-| Authentication, authorization, ownership checks     | Implemented     |
-| Prompt-injection separation and adversarial tests   | Planned         |
-| Rate limiting of authentication endpoints           | Implemented     |
-| Rate limiting elsewhere, quotas, AI cost controls   | Planned         |
-| Bounded PDF parsing in an isolated worker           | Planned         |
-| Text-only rendering of AI and document content      | Planned         |
-| Least-privilege IAM, Secrets Manager                | Planned         |
-| CSRF strategy, token storage                        | Pending `OQ-19` |
+| Control                                             | Status                                                |
+| --------------------------------------------------- | ----------------------------------------------------- |
+| Secret scanning, dependency audits, image scanning  | Implemented                                           |
+| Non-root, minimal, pinned container images          | Implemented                                           |
+| Local services bound to loopback only               | Implemented                                           |
+| Generated object keys, hashed and encrypted objects | Implemented                                           |
+| Input validation, upload validation                 | Planned                                               |
+| Authentication, authorization, ownership checks     | Implemented                                           |
+| Prompt-injection separation and adversarial tests   | Planned                                               |
+| Rate limiting of authentication endpoints           | Implemented                                           |
+| Rate limiting elsewhere, quotas, AI cost controls   | Planned                                               |
+| Bounded PDF parsing in an isolated worker           | Planned                                               |
+| Text-only rendering of AI and document content      | Planned                                               |
+| Least-privilege IAM, Secrets Manager                | Planned                                               |
+| CSRF strategy, token storage                        | Provisional ADR-021; production cookies still `OQ-19` |
 
 ---
 

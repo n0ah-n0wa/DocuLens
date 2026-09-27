@@ -2,7 +2,7 @@
   "name": "@doculens/shared-types",
   "version": "0.1.0",
   "private": true,
-  "description": "TypeScript contracts shared between the web app and tooling. To be generated from the API's OpenAPI schema once endpoints exist.",
+  "description": "TypeScript contracts shared between the web app and tooling. Hand-maintained against the OpenAPI schema until generation is wired.",
   "type": "module",
   "types": "./src/index.ts",
   "exports": {

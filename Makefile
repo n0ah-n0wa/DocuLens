@@ -32,8 +32,9 @@ typecheck: ## Type-check Python (mypy --strict) and TypeScript (tsc, strict)
 	uv run mypy
 	pnpm run typecheck
 
-test: ## Run Python tests
+test: ## Run Python tests and web unit tests
 	uv run pytest
+	pnpm run test:web
 
 test-e2e: ## Run Playwright end-to-end tests (requires `make build` first)
 	pnpm run test:e2e
