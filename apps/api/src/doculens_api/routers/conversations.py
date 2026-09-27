@@ -335,7 +335,19 @@ async def ask_question(
 @router.post(
     "/{conversation_id}/messages/stream",
     summary="Ask a question and stream the grounded answer over SSE (§44)",
+    response_class=StreamingResponse,
     responses={
+        HTTPStatus.OK: {
+            "description": (
+                "text/event-stream of `delta` token events, then a `final` answer event; "
+                "mid-stream failures emit an `error` event and persist nothing."
+            ),
+            "content": {
+                "text/event-stream": {
+                    "schema": {"type": "string", "description": "Server-Sent Event frames"},
+                }
+            },
+        },
         **NOT_FOUND_RESPONSE,
         **BAD_REQUEST_RESPONSE,
         **RATE_LIMITED_RESPONSE,

@@ -1048,6 +1048,7 @@ PATCH  /api/v1/conversations/{id}
 DELETE /api/v1/conversations/{id}
 
 POST   /api/v1/conversations/{id}/messages
+POST   /api/v1/conversations/{id}/messages/stream
 
 GET    /api/v1/conversations/{id}/messages
 ```

@@ -26,6 +26,7 @@ SPEC_PATHS: dict[str, set[str]] = {
     "/api/v1/conversations": {"get", "post"},
     "/api/v1/conversations/{conversation_id}": {"get", "patch", "delete"},
     "/api/v1/conversations/{conversation_id}/messages": {"get", "post"},
+    "/api/v1/conversations/{conversation_id}/messages/stream": {"post"},
 }
 
 
@@ -85,6 +86,10 @@ def test_every_public_route_is_documented_and_no_extras_exist(client: TestClient
         ]
     )
     assert props["question"]["maxLength"] == 100_000
+
+    stream = paths["/api/v1/conversations/{conversation_id}/messages/stream"]["post"]
+    assert "429" in stream["responses"]
+    assert stream["responses"]["200"]["content"]["text/event-stream"]
 
 
 def test_interactive_docs_are_served_when_enabled(client: TestClient) -> None:
