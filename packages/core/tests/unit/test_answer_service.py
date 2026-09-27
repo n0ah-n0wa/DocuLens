@@ -16,7 +16,7 @@ from doculens.application.llm import LLMLimits
 from doculens.application.rag import RagQuery, RagService
 from doculens.application.reranking import RerankingStage
 from doculens.application.retrieval import RetrievalService, build_retriever
-from doculens.domain.answering import AnswerOutcome, GenerationTimeoutError
+from doculens.domain.answering import AnswerOutcome, AnswerToken, GenerationTimeoutError
 from doculens.domain.conversations import ConversationNotFoundError, MessageRole
 from doculens.domain.errors import ConflictError
 from doculens.domain.llm import GenerationOptions, LLMProviderUnavailableError
@@ -483,20 +483,16 @@ async def test_duplicate_message_identifiers_are_refused_by_the_store(world: Wor
 
 
 async def test_answer_stream_emits_tokens_then_persists_with_citations(world: World) -> None:
-    from doculens.domain.answering import AnswerToken
-
     world.llm.stream_chunk_characters = 5
-    tokens: list[str] = []
-    result = None
-    async for part in world.service().answer_stream(
-        world.owner.id, "How do refresh tokens rotate?"
-    ):
-        if isinstance(part, AnswerToken):
-            tokens.append(part.text)
-        else:
-            result = part
+    parts = [
+        part
+        async for part in world.service().answer_stream(
+            world.owner.id, "How do refresh tokens rotate?"
+        )
+    ]
+    tokens = [part.text for part in parts if isinstance(part, AnswerToken)]
+    result = next(part for part in parts if not isinstance(part, AnswerToken))
 
-    assert result is not None
     assert result.outcome is AnswerOutcome.ANSWERED
     assert "".join(tokens) == result.answer or len(tokens) > 0
     assert result.citations
@@ -504,20 +500,23 @@ async def test_answer_stream_emits_tokens_then_persists_with_citations(world: Wo
 
 
 async def test_failed_answer_stream_persists_nothing(world: World) -> None:
-    from doculens.domain.answering import AnswerToken
-    from doculens.domain.llm import LLMProviderUnavailableError
-
     world.llm.fail_after_stream_characters = 4
     world.llm.failures = [LLMProviderUnavailableError(provider="fake", model="fake")]
     world.llm.stream_chunk_characters = 4
 
     tokens: list[str] = []
-    with pytest.raises(LLMProviderUnavailableError):
+
+    async def drain_until_failure() -> None:
+        # Partial tokens must be retained if the stream raises mid-flight; a
+        # comprehension would discard them on failure (PERF401 not applicable).
         async for part in world.service().answer_stream(
             world.owner.id, "How do refresh tokens rotate?"
         ):
             if isinstance(part, AnswerToken):
-                tokens.append(part.text)
+                tokens.append(part.text)  # noqa: PERF401
+
+    with pytest.raises(LLMProviderUnavailableError):
+        await drain_until_failure()
 
     assert tokens  # some progressive text was shown
     assert world.store.messages == {}  # nothing persisted
@@ -526,8 +525,6 @@ async def test_failed_answer_stream_persists_nothing(world: World) -> None:
 
 
 async def test_cancelled_answer_stream_persists_nothing(world: World) -> None:
-    from doculens.domain.answering import AnswerToken
-
     world.llm.stream_chunk_characters = 3
     world.llm.delay_seconds = 0.01
 
