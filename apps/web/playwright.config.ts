@@ -9,6 +9,8 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
+  // Full-stack critical path needs API + worker + compose; keep it opt-in.
+  testIgnore: process.env.CRITICAL_PATH === "1" ? [] : [/critical-path\.spec\.ts/],
   reporter: process.env.CI ? [["github"], ["html", { open: "never" }]] : "list",
   use: {
     baseURL,

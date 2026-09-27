@@ -114,3 +114,103 @@ export interface UpdateCollectionRequest {
   /** Omit to leave unchanged; `null` clears the description. */
   description?: string | null;
 }
+
+export type MessageRole = "USER" | "ASSISTANT" | "SYSTEM";
+
+export type AnswerOutcome = "answered" | "insufficient_evidence" | "blocked";
+
+export interface Conversation {
+  id: string;
+  collection_id: string | null;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateConversationRequest {
+  title: string;
+  collection_id?: string | null;
+}
+
+export interface UpdateConversationRequest {
+  title?: string;
+  /** Omit to leave unchanged; `null` detaches from the collection. */
+  collection_id?: string | null;
+}
+
+/**
+ * Citation evidence returned with assistant messages (§23).
+ * Filename is not on the wire — resolve via `document_id` against the documents API.
+ */
+export interface Citation {
+  id: string;
+  document_id: string;
+  page_number: number;
+  chunk_id: string | null;
+  quoted_text: string;
+  retrieval_score: number;
+  reranking_score: number | null;
+  citation_order: number;
+}
+
+export interface Message {
+  id: string;
+  role: MessageRole;
+  content: string;
+  created_at: string;
+  citations: Citation[];
+}
+
+export interface AskRequest {
+  question: string;
+  /** When set, narrows retrieval to these documents for this question only. */
+  document_ids?: string[];
+}
+
+export interface RetrievalMetadata {
+  query: string;
+  rewritten: boolean;
+  retriever: string;
+  documents_in_scope: number;
+  hits: number;
+  evidence: number;
+  context_items: number;
+  reranking: string;
+  model: string | null;
+  prompt_version: string | null;
+  invalid_references: number;
+  truncated: boolean;
+  uncited: boolean;
+}
+
+export interface UsageMetadata {
+  embedding_requests: number;
+  embedding_tokens: number | null;
+  llm_requests: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+}
+
+export interface TimingMetadata {
+  rewrite_ms: number;
+  retrieval_ms: number;
+  generation_ms: number;
+  persistence_ms: number;
+  total_ms: number;
+}
+
+export interface AnswerResponse {
+  conversation_id: string;
+  outcome: AnswerOutcome;
+  user_message: Message;
+  assistant_message: Message;
+  retrieval: RetrievalMetadata;
+  usage: UsageMetadata;
+  timing: TimingMetadata;
+}
+
+/** One SSE payload from `POST .../messages/stream` (§44). */
+export type AnswerStreamEvent =
+  | { type: "delta"; text: string }
+  | { type: "final"; answer: AnswerResponse }
+  | { type: "error"; error: ApiErrorBody };

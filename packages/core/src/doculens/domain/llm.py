@@ -145,6 +145,20 @@ class Generation:
         return self.finish_reason is FinishReason.LENGTH
 
 
+@dataclass(frozen=True, slots=True)
+class StreamEvent:
+    """One step of a streamed generation (§44).
+
+    ``delta`` carries progressive text (may be empty on the terminal event). ``done`` is set
+    exactly once, on the final event, with the complete ``Generation``. Callers must not treat
+    intermediate text as the persisted answer — citation cleaning and persistence happen after
+    ``done``.
+    """
+
+    delta: str = ""
+    done: Generation | None = None
+
+
 def validate_messages(messages: Sequence[ChatMessage], *, max_input_characters: int) -> None:
     """Refuse prompts no provider should be paid for: empty, blank turns, a system message
     anywhere but first, not ending with the user's turn, or over the character budget."""
@@ -180,5 +194,6 @@ __all__ = [
     "LLMRequestRejectedError",
     "LLMResponseInvalidError",
     "LLMUsage",
+    "StreamEvent",
     "validate_messages",
 ]

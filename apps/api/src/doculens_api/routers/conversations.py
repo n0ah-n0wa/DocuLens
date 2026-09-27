@@ -1,22 +1,29 @@
-"""Conversations and their message history (SPECIFICATIONS.md §21, §23, §28, §33).
+"""Conversations and their message history (SPECIFICATIONS.md §21, §23, §28, §33, §44).
 
 Posting a question to a conversation runs the answering pipeline and persists both turns; the
 citations are returned with each assistant message so the client can render them separately
-from the answer text (§23). Every route addresses the caller's own conversations only (§9).
+from the answer text (§23). The streaming variant yields progressive tokens over SSE and only
+persists after a successful completion (§44, ADR-018). Every route addresses the caller's own
+conversations only (§9).
 """
 
+import json
+from collections.abc import AsyncIterator
 from datetime import datetime
 from http import HTTPStatus
 from typing import Self
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.requests import Request
 
 from doculens.application.conversations import MessageWithCitations
 from doculens.application.rag import RagQuery
 from doculens.application.ratelimit import enforce
-from doculens.domain.answering import AnswerOutcome, AnswerResult
+from doculens.domain.answering import AnswerOutcome, AnswerResult, AnswerToken
 from doculens.domain.common import UNSET
 from doculens.domain.conversations import (
     MAX_CONVERSATION_TITLE_LENGTH,
@@ -25,6 +32,7 @@ from doculens.domain.conversations import (
     Message,
     MessageRole,
 )
+from doculens.domain.errors import DomainError
 from doculens_api.dependencies import (
     ConversationServiceDep,
     CurrentUserDep,
@@ -38,7 +46,10 @@ from doculens_api.errors import (
     NOT_FOUND_RESPONSE,
     RATE_LIMITED_RESPONSE,
     ErrorResponse,
+    request_id_of,
 )
+
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/conversations",
@@ -319,6 +330,97 @@ async def ask_question(
         conversation_id=conversation_id,
     )
     return AnswerResponse.from_result(result)
+
+
+@router.post(
+    "/{conversation_id}/messages/stream",
+    summary="Ask a question and stream the grounded answer over SSE (§44)",
+    responses={
+        **NOT_FOUND_RESPONSE,
+        **BAD_REQUEST_RESPONSE,
+        **RATE_LIMITED_RESPONSE,
+        HTTPStatus.SERVICE_UNAVAILABLE: {
+            "model": ErrorResponse,
+            "description": "A provider did not answer in time; nothing was recorded, retry.",
+        },
+    },
+)
+async def ask_question_stream(  # noqa: PLR0913, PLR0917 - FastAPI injects each collaborator
+    conversation_id: UUID,
+    body: AskRequest,
+    request: Request,
+    user: CurrentUserDep,
+    rag: RagServiceDep,
+    limiter: RateLimiterDep,
+    settings: SettingsDep,
+) -> StreamingResponse:
+    """Server-Sent Events: ``delta`` tokens, then ``final`` with the persisted answer.
+
+    On mid-stream failure an ``error`` event is sent and nothing is persisted. Client abort
+    cancels generation without writing messages (ADR-018 / OQ-18 provisional).
+    """
+    await enforce(
+        limiter,
+        f"ask:user:{user.id}",
+        limit=settings.ask_rate_limit_attempts,
+        window_seconds=settings.ask_rate_limit_window_seconds,
+    )
+    request_id = request_id_of(request)
+
+    async def events() -> AsyncIterator[str]:
+        try:
+            stream = rag.answer_stream(
+                RagQuery(owner_id=user.id, question=body.question, document_ids=body.document_ids),
+                conversation_id=conversation_id,
+            )
+            async for part in stream:
+                if await request.is_disconnected():
+                    closer = getattr(stream, "aclose", None)
+                    if closer is not None:
+                        await closer()
+                    return
+                if isinstance(part, AnswerToken):
+                    yield _sse({"type": "delta", "text": part.text})
+                else:
+                    payload = AnswerResponse.from_result(part).model_dump(mode="json")
+                    yield _sse({"type": "final", "answer": payload})
+        except DomainError as exc:
+            yield _sse(
+                {
+                    "type": "error",
+                    "error": {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "request_id": request_id,
+                    },
+                }
+            )
+        except Exception:
+            logger.exception("answer stream failed", request_id=request_id)
+            yield _sse(
+                {
+                    "type": "error",
+                    "error": {
+                        "code": "INTERNAL_ERROR",
+                        "message": "An unexpected error occurred.",
+                        "request_id": request_id,
+                    },
+                }
+            )
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _sse(payload: dict[str, object]) -> str:
+    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
 
 @router.get(

@@ -11,22 +11,28 @@ import { messageForApiError } from "@/lib/api/errors";
 import { shouldPollProcessingStatus } from "@/lib/documents/status";
 import { formatTimestamp } from "@/lib/format";
 import { useCollectionsQuery } from "@/lib/hooks/use-collections";
+import { useConversationsQuery } from "@/lib/hooks/use-conversations";
 import { useDocumentsQuery } from "@/lib/hooks/use-documents";
 
 export function DashboardPageClient() {
   const documentsQuery = useDocumentsQuery();
   const collectionsQuery = useCollectionsQuery();
+  const conversationsQuery = useConversationsQuery();
 
   const documentsLoading = documentsQuery.isPending && documentsQuery.data === undefined;
   const collectionsLoading = collectionsQuery.isPending && collectionsQuery.data === undefined;
   const documents = documentsQuery.data ?? [];
   const collections = collectionsQuery.data ?? [];
+  const conversations = conversationsQuery.data ?? [];
   const processing = documents.filter((doc) => shouldPollProcessingStatus(doc.processing_status));
   const readyCount = documents.filter((doc) => doc.processing_status === "READY").length;
   const failedCount = documents.filter((doc) => doc.processing_status === "FAILED").length;
   const recent = [...documents]
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
     .slice(0, 8);
+  const recentConversations = [...conversations]
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    .slice(0, 5);
 
   const documentsFailed = documentsQuery.isError && documentsQuery.data === undefined;
   const collectionsFailed = collectionsQuery.isError;
@@ -35,12 +41,18 @@ export function DashboardPageClient() {
     <div className="space-y-8">
       <PageHeader
         title="Dashboard"
-        description="Upload PDFs, organise collections, and track processing until documents are ready."
+        description="Upload PDFs, organise collections, ask grounded questions, and track processing until documents are ready."
         actions={
           <>
             <Link
-              href="/documents/upload"
+              href="/chat"
               className="inline-flex items-center justify-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+            >
+              Open chat
+            </Link>
+            <Link
+              href="/documents/upload"
+              className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-900 hover:bg-slate-50"
             >
               Upload PDF
             </Link>
@@ -80,13 +92,21 @@ export function DashboardPageClient() {
             </Alert>
           ) : null}
 
-          <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <StatCard label="Documents" value={String(documents.length)} />
             <StatCard label="Ready" value={String(readyCount)} />
             <StatCard label="Processing" value={String(processing.length)} />
             <StatCard
               label="Collections"
               value={collectionsFailed ? "—" : String(collections.length)}
+            />
+            <StatCard
+              label="Conversations"
+              value={
+                conversationsQuery.isError && conversationsQuery.data === undefined
+                  ? "—"
+                  : String(conversations.length)
+              }
             />
           </dl>
 
@@ -128,6 +148,67 @@ export function DashboardPageClient() {
               </ul>
             </section>
           ) : null}
+
+          <section className="space-y-3" aria-labelledby="recent-conversations-heading">
+            <div className="flex items-center justify-between gap-3">
+              <h2
+                id="recent-conversations-heading"
+                className="text-sm font-semibold text-slate-900"
+              >
+                Recent conversations
+              </h2>
+              <Link
+                href="/chat"
+                className="text-sm font-medium text-slate-900 underline-offset-2 hover:underline"
+              >
+                Open chat
+              </Link>
+            </div>
+            {conversationsQuery.isPending && conversationsQuery.data === undefined ? (
+              <LoadingState label="Loading conversations" />
+            ) : conversationsQuery.isError && conversationsQuery.data === undefined ? (
+              <ErrorState
+                title="Could not load conversations"
+                message={messageForApiError(conversationsQuery.error)}
+                action={
+                  <Button variant="secondary" onClick={() => void conversationsQuery.refetch()}>
+                    Try again
+                  </Button>
+                }
+              />
+            ) : recentConversations.length === 0 ? (
+              <EmptyState
+                title="No conversations yet"
+                message="Start a chat once you have READY documents to ask about."
+                action={
+                  <Link
+                    href="/chat"
+                    className="inline-flex items-center justify-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+                  >
+                    Open chat
+                  </Link>
+                }
+              />
+            ) : (
+              <ul className="divide-y divide-slate-100 rounded-md border border-slate-200 bg-white">
+                {recentConversations.map((conversation) => (
+                  <li key={conversation.id}>
+                    <Link
+                      href={`/chat/${conversation.id}`}
+                      className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-3 text-sm hover:bg-slate-50"
+                    >
+                      <span className="font-medium break-words text-slate-900">
+                        {conversation.title}
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        {formatTimestamp(conversation.updated_at)}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
           <section className="space-y-3" aria-labelledby="recent-documents-heading">
             <div className="flex items-center justify-between gap-3">

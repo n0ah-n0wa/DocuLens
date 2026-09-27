@@ -2,8 +2,8 @@
 
 The API serves JSON to a separate frontend origin, so responses must never be sniffed as another
 content type, framed, cached by intermediaries, or leak referrers. Headers set explicitly by a
-handler take precedence. Cross-origin policy (CORS) is added with the frontend hosting decision
-(`OQ-19`), not here.
+handler take precedence. Cross-origin policy (CORS) is configured on the app factory from
+``CORS_ORIGINS`` (local defaults when unset; see OQ-19 for production hosting).
 """
 
 from starlette.datastructures import MutableHeaders

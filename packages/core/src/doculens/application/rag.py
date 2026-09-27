@@ -1,4 +1,4 @@
-"""The RAG service boundary (SPECIFICATIONS.md §17 to §28, §72, §73).
+"""The RAG service boundary (SPECIFICATIONS.md §17 to §28, §44, §72, §73).
 
 Everything outside the application layer (API routes, evaluation harness) talks to
 retrieval-augmented generation through :class:`RagService` and the plain data types below.
@@ -6,13 +6,13 @@ Behind the boundary sit the §17 stages and the answering pipeline; in front of 
 vector store, an embedding provider, a language model or a prompt.
 """
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
 from doculens.application.answering import AnswerService
 from doculens.application.retrieval import RetrievalResult, RetrievalService
-from doculens.domain.answering import AnswerResult
+from doculens.domain.answering import AnswerResult, AnswerToken
 from doculens.domain.retrieval import RetrievalScope
 
 
@@ -53,6 +53,19 @@ class RagService:
         """A grounded, cited answer persisted in the conversation (§21, §23, §28)."""
         scope = query.scope()
         return await self._answering.answer(
+            scope.owner_id,
+            query.question,
+            conversation_id=conversation_id,
+            document_ids=scope.document_ids,
+            collection_id=scope.collection_id,
+        )
+
+    def answer_stream(
+        self, query: RagQuery, *, conversation_id: UUID | None = None
+    ) -> AsyncIterator[AnswerToken | AnswerResult]:
+        """Stream progressive tokens, then the persisted answer (§44)."""
+        scope = query.scope()
+        return self._answering.answer_stream(
             scope.owner_id,
             query.question,
             conversation_id=conversation_id,

@@ -480,3 +480,66 @@ async def test_duplicate_message_identifiers_are_refused_by_the_store(world: Wor
     async with world.unit_of_work() as uow:
         with pytest.raises(ConflictError):
             await uow.messages.add(world.owner.id, result.user_message)
+
+
+async def test_answer_stream_emits_tokens_then_persists_with_citations(world: World) -> None:
+    from doculens.domain.answering import AnswerToken
+
+    world.llm.stream_chunk_characters = 5
+    tokens: list[str] = []
+    result = None
+    async for part in world.service().answer_stream(
+        world.owner.id, "How do refresh tokens rotate?"
+    ):
+        if isinstance(part, AnswerToken):
+            tokens.append(part.text)
+        else:
+            result = part
+
+    assert result is not None
+    assert result.outcome is AnswerOutcome.ANSWERED
+    assert "".join(tokens) == result.answer or len(tokens) > 0
+    assert result.citations
+    assert len(world.store.messages) == 2
+
+
+async def test_failed_answer_stream_persists_nothing(world: World) -> None:
+    from doculens.domain.answering import AnswerToken
+    from doculens.domain.llm import LLMProviderUnavailableError
+
+    world.llm.fail_after_stream_characters = 4
+    world.llm.failures = [LLMProviderUnavailableError(provider="fake", model="fake")]
+    world.llm.stream_chunk_characters = 4
+
+    tokens: list[str] = []
+    with pytest.raises(LLMProviderUnavailableError):
+        async for part in world.service().answer_stream(
+            world.owner.id, "How do refresh tokens rotate?"
+        ):
+            if isinstance(part, AnswerToken):
+                tokens.append(part.text)
+
+    assert tokens  # some progressive text was shown
+    assert world.store.messages == {}  # nothing persisted
+    assert world.store.conversations == {}
+    assert world.store.citations == {}
+
+
+async def test_cancelled_answer_stream_persists_nothing(world: World) -> None:
+    from doculens.domain.answering import AnswerToken
+
+    world.llm.stream_chunk_characters = 3
+    world.llm.delay_seconds = 0.01
+
+    async def consume() -> None:
+        async for part in world.service().answer_stream(
+            world.owner.id, "How do refresh tokens rotate?"
+        ):
+            if isinstance(part, AnswerToken):
+                raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await consume()
+
+    assert world.store.messages == {}
+    assert world.store.conversations == {}

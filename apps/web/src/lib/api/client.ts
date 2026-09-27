@@ -188,6 +188,11 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   return payload as T;
 }
 
+/** Attempt a single refresh of the access token. Used by streaming clients that cannot reuse apiRequest's body parsing. */
+export async function tryRefreshSession(): Promise<boolean> {
+  return refreshAccessToken();
+}
+
 export function storeTokenPair(pair: unknown): TokenPairLike {
   if (!isTokenPair(pair)) {
     clearSessionTokens();

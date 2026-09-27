@@ -13,6 +13,7 @@ from datetime import timedelta
 
 import structlog
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from doculens.application.auth import AuthConfig, AuthService
 from doculens.application.collections import CollectionService
@@ -191,7 +192,17 @@ def create_app(
 
     # Middleware added later wraps the earlier ones; the request-context middleware goes last so
     # that it is outermost and every response, including those from other middleware, is
-    # correlated and access-logged.
+    # correlated and access-logged. CORS (when configured) wraps that so browsers can call the API.
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RequestContextMiddleware, header_name=resolved.request_id_header)
+    cors_origins = resolved.cors_origin_list
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=[resolved.request_id_header],
+        )
     return app

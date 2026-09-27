@@ -60,9 +60,26 @@ class ApiSettings(CoreSettings):
         description="Questions allowed per authenticated user per window (§37).",
     )
     ask_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+    cors_origins: str = Field(
+        default="",
+        description=(
+            "Comma-separated browser origins allowed for CORS (OQ-19 provisional). "
+            "Empty means local defaults (127.0.0.1/localhost:3000) when not deployed, "
+            "and no CORS when deployed."
+        ),
+    )
 
     @property
     def docs_enabled(self) -> bool:
         if self.api_docs_enabled is not None:
             return self.api_docs_enabled
         return not self.is_deployed
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        configured = [part.strip() for part in self.cors_origins.split(",") if part.strip()]
+        if configured:
+            return configured
+        if self.is_deployed:
+            return []
+        return ["http://127.0.0.1:3000", "http://localhost:3000"]

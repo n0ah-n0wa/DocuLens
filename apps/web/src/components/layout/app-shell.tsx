@@ -11,6 +11,7 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/documents", label: "Documents" },
   { href: "/collections", label: "Collections" },
+  { href: "/chat", label: "Chat" },
 ] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {

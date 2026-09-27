@@ -319,6 +319,18 @@ class AnswerResult:
         return self.outcome is AnswerOutcome.ANSWERED and not self.citations
 
 
+@dataclass(frozen=True, slots=True)
+class AnswerToken:
+    """A progressive text fragment emitted while generating (§44).
+
+    Tokens are for display only. Persistence and citations happen only with the final
+    ``AnswerResult``; a failed or cancelled stream must discard every token so the
+    conversation never shows a question without its answer (OQ-18 / ADR-018).
+    """
+
+    text: str
+
+
 __all__ = [
     "BLOCKED_ANSWER_STATEMENT",
     "MIN_CONTENT_WORD_LENGTH",
@@ -327,6 +339,7 @@ __all__ = [
     "AnswerOutcome",
     "AnswerResult",
     "AnswerTiming",
+    "AnswerToken",
     "AnswerUsage",
     "CleanedAnswer",
     "GenerationTimeoutError",

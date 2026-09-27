@@ -1,10 +1,11 @@
-"""Language-model port (SPECIFICATIONS.md §21, §38, §67, §73).
+"""Language-model port (SPECIFICATIONS.md §21, §38, §44, §67, §73).
 
 The answering use case generates through :class:`LLMProvider` and never sees a vendor SDK or
 HTTP client. Every adapter honours the same contract:
 
 - ``generate`` takes the prompt as ordered ``ChatMessage`` turns (system first, user last) and
   returns a ``Generation`` with the text, the model that produced it, why it stopped and usage;
+- ``generate_stream`` yields ``StreamEvent`` deltas and a terminal event with ``done`` set (§44);
 - prompts are validated with ``validate_messages`` before any network call, so a caller bug
   never becomes a paid request; ``max_output_tokens`` is capped by the configured limit;
 - every request has a timeout and transient failures are retried with bounded exponential
@@ -14,15 +15,13 @@ HTTP client. Every adapter honours the same contract:
   malformed answers, ``LLMInputError`` for the caller's own mistakes;
 - usage (requests, input and output tokens when reported, latency) travels with every
   generation for the §38 ledger; the API key never appears in logs or errors.
-
-Streaming (§44) is added to this port when the chat endpoint arrives.
 """
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from doculens.domain.llm import ChatMessage, Generation, GenerationOptions
+from doculens.domain.llm import ChatMessage, Generation, GenerationOptions, StreamEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +52,12 @@ class LLMProvider(Protocol):
         self, messages: Sequence[ChatMessage], *, options: GenerationOptions | None = None
     ) -> Generation:
         """One complete answer to the prompt."""
+        ...
+
+    def generate_stream(
+        self, messages: Sequence[ChatMessage], *, options: GenerationOptions | None = None
+    ) -> AsyncIterator[StreamEvent]:
+        """Progressive text deltas, then a terminal event whose ``done`` is the full generation."""
         ...
 
 

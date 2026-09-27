@@ -25,7 +25,7 @@ Rules the service enforces:
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Protocol
@@ -41,6 +41,7 @@ from doculens.domain.answering import (
     AnswerOutcome,
     AnswerResult,
     AnswerTiming,
+    AnswerToken,
     AnswerUsage,
     GenerationTimeoutError,
     RetrievalMetadata,
@@ -64,7 +65,14 @@ from doculens.domain.conversations import (
 )
 from doculens.domain.errors import DependencyUnavailableError, InvalidInputError
 from doculens.domain.ids import new_id
-from doculens.domain.llm import ChatMessage, Generation, GenerationOptions, LLMError, LLMUsage
+from doculens.domain.llm import (
+    ChatMessage,
+    Generation,
+    GenerationOptions,
+    LLMError,
+    LLMResponseInvalidError,
+    LLMUsage,
+)
 from doculens.domain.prompting import INSUFFICIENT_EVIDENCE_STATEMENT, GroundedPrompt, PromptBuilder
 from doculens.domain.time import utc_now
 
@@ -333,6 +341,154 @@ class AnswerService:
             },
         )
         return result
+
+    async def answer_stream(  # noqa: PLR0915 - mirrors answer(); streaming adds token yields
+        self,
+        owner_id: UUID,
+        question: str,
+        *,
+        conversation_id: UUID | None = None,
+        document_ids: Sequence[UUID] | None = None,
+        collection_id: UUID | None = None,
+    ) -> AsyncIterator[AnswerToken | AnswerResult]:
+        """Stream progressive answer text, then the persisted ``AnswerResult`` (§44).
+
+        Tokens are display-only. The user and assistant messages (and citations) are written
+        in one transaction after generation completes successfully. Cancellation or a mid-stream
+        failure persists nothing, so the conversation never shows a question without its answer.
+        """
+        started = time.perf_counter()
+        state = await self._load_conversation(owner_id, question, conversation_id, collection_id)
+        if document_ids is None and collection_id is None:
+            collection_id = state.conversation.collection_id
+
+        rewrite = await self._rewriter.rewrite(question, state.history)
+        retrieval_started = time.perf_counter()
+        retrieval = await self._retrieval.retrieve(
+            owner_id, rewrite.query, document_ids=document_ids, collection_id=collection_id
+        )
+        retrieval_ms = _elapsed_ms(retrieval_started)
+
+        generation_started = time.perf_counter()
+        prompt: GroundedPrompt | None = None
+        generation: Generation | None = None
+        invalid = 0
+        violation: str | None = None
+        cited: tuple[int, ...] = ()
+
+        if retrieval.context.is_empty:
+            answer_text = INSUFFICIENT_EVIDENCE_STATEMENT
+            outcome = AnswerOutcome.INSUFFICIENT_EVIDENCE
+        else:
+            prompt = self._prompt_builder.build(question, retrieval.context, history=state.history)
+            raw_parts: list[str] = []
+            try:
+                async with asyncio.timeout(self._limits.generation_timeout_seconds):
+                    async for event in self._llm.generate_stream(
+                        prompt.messages, options=self._options
+                    ):
+                        if event.delta:
+                            raw_parts.append(event.delta)
+                            # Progressive text is untrusted and may still contain invalid
+                            # references; the client must replace it with the final answer.
+                            yield AnswerToken(event.delta)
+                        if event.done is not None:
+                            generation = event.done
+            except TimeoutError as exc:
+                raise GenerationTimeoutError from exc
+            if generation is None:
+                # Stream ended without a terminal event — treat as a provider fault; nothing
+                # persisted (the client must discard any tokens already shown).
+                raise LLMResponseInvalidError(
+                    provider=self._llm.name,
+                    model=self._llm.model,
+                    diagnostics="stream ended without a complete generation",
+                )
+            cleaned = clean_references(generation.text, prompt.citation_indexes)
+            invalid = cleaned.invalid_references
+            violation = detect_violation(generation.text)
+            if violation is not None:
+                logger.warning(
+                    "answer withheld",
+                    extra={
+                        "operation": "answer.blocked",
+                        "user_id": str(owner_id),
+                        "violation": violation,
+                    },
+                )
+                answer_text = BLOCKED_ANSWER_STATEMENT
+                outcome = AnswerOutcome.BLOCKED
+                cited = ()
+            elif is_insufficient(cleaned.text):
+                answer_text = cleaned.text
+                outcome = AnswerOutcome.INSUFFICIENT_EVIDENCE
+                cited = ()
+            else:
+                answer_text = cleaned.text
+                outcome = AnswerOutcome.ANSWERED
+                cited = cleaned.cited
+        generation_ms = _elapsed_ms(generation_started)
+
+        persistence_started = time.perf_counter()
+        user_message, assistant_message, citations = await self._persist(
+            owner_id, state, question, answer_text, cited, retrieval
+        )
+        persistence_ms = _elapsed_ms(persistence_started)
+
+        result = AnswerResult(
+            outcome=outcome,
+            answer=answer_text,
+            citations=citations,
+            conversation_id=state.conversation.id,
+            user_message=user_message,
+            assistant_message=assistant_message,
+            retrieval=RetrievalMetadata(
+                question=question,
+                query=rewrite.query,
+                rewritten=rewrite.applied,
+                retriever=retrieval.retriever,
+                documents_in_scope=retrieval.stats.documents_in_scope,
+                hits=retrieval.stats.hits,
+                evidence=len(retrieval.evidence),
+                context_items=len(retrieval.context.items),
+                context_characters=retrieval.context.characters,
+                reranking=retrieval.reranking,
+                prompt_version=prompt.version if prompt else None,
+                model=generation.model if generation else None,
+                finish_reason=generation.finish_reason if generation else None,
+                invalid_references=invalid,
+                violation=violation,
+            ),
+            usage=AnswerUsage(
+                embeddings=retrieval.usage,
+                generation=generation.usage if generation else LLMUsage(),
+                rewriting=rewrite.usage,
+            ),
+            timing=AnswerTiming(
+                rewrite_ms=rewrite.latency_ms,
+                retrieval_ms=retrieval_ms,
+                generation_ms=generation_ms,
+                persistence_ms=persistence_ms,
+                total_ms=_elapsed_ms(started),
+            ),
+        )
+        logger.info(
+            "question answered",
+            extra={
+                "operation": "answer.complete",
+                "user_id": str(owner_id),
+                "conversation_id": str(state.conversation.id),
+                "outcome": outcome.value,
+                "rewritten": rewrite.applied,
+                "evidence": len(retrieval.evidence),
+                "citations": len(citations),
+                "invalid_references": invalid,
+                "model": result.retrieval.model,
+                "total_ms": result.timing.total_ms,
+                "streamed": True,
+            },
+        )
+        yield result
 
     async def _load_conversation(
         self,

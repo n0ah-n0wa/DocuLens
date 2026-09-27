@@ -2,12 +2,13 @@
 
 Answers are scripted or derived from the last user message, so tests can predict them; calls
 and options are recorded, and delays and failures can be scripted so use cases can be tested
-against provider behaviour without a network.
+against provider behaviour without a network. ``generate_stream`` yields character chunks then a
+terminal ``StreamEvent(done=...)`` so answering can exercise §44 without a network.
 """
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 
 from doculens.application.llm import LLMLimits
@@ -19,6 +20,7 @@ from doculens.domain.llm import (
     Generation,
     GenerationOptions,
     LLMUsage,
+    StreamEvent,
     validate_messages,
 )
 from doculens.domain.prompting import (
@@ -43,6 +45,11 @@ class FakeLLMProvider:
     responses: list[str] = field(default_factory=list)
     failures: list[Exception] = field(default_factory=list)
     delay_seconds: float = 0.0
+    """Wall-clock pause before the first token (and before a non-stream generate returns)."""
+    stream_chunk_characters: int = 8
+    """How many characters each streamed delta carries (progressive UX in tests)."""
+    fail_after_stream_characters: int | None = None
+    """When set, raise the next ``failures`` entry after this many streamed characters."""
     characters_per_token: int = 4
     calls: list[list[ChatMessage]] = field(default_factory=list)
     options_seen: list[GenerationOptions] = field(default_factory=list)
@@ -56,11 +63,39 @@ class FakeLLMProvider:
     async def generate(
         self, messages: Sequence[ChatMessage], *, options: GenerationOptions | None = None
     ) -> Generation:
+        text, finish_reason, _chosen = await self._prepare(messages, options)
+        return self._generation(text, messages=messages, finish_reason=finish_reason)
+
+    async def generate_stream(
+        self, messages: Sequence[ChatMessage], *, options: GenerationOptions | None = None
+    ) -> AsyncIterator[StreamEvent]:
+        text, finish_reason, _chosen = await self._prepare(messages, options)
+        emitted = 0
+        chunk = max(1, self.stream_chunk_characters)
+        while emitted < len(text):
+            if (
+                self.fail_after_stream_characters is not None
+                and emitted >= self.fail_after_stream_characters
+                and self.failures
+            ):
+                raise self.failures.pop(0)
+            nxt = text[emitted : emitted + chunk]
+            emitted += len(nxt)
+            yield StreamEvent(delta=nxt)
+            if self.delay_seconds:
+                await asyncio.sleep(self.delay_seconds)
+        yield StreamEvent(
+            done=self._generation(text, messages=messages, finish_reason=finish_reason)
+        )
+
+    async def _prepare(
+        self, messages: Sequence[ChatMessage], options: GenerationOptions | None
+    ) -> tuple[str, FinishReason, GenerationOptions]:
         validate_messages(messages, max_input_characters=self.limits.max_input_characters)
         chosen = options or GenerationOptions()
         self.calls.append(list(messages))
         self.options_seen.append(chosen)
-        if self.failures:
+        if self.failures and self.fail_after_stream_characters is None:
             raise self.failures.pop(0)
         if self.delay_seconds:
             await asyncio.sleep(self.delay_seconds)
@@ -70,6 +105,15 @@ class FakeLLMProvider:
         if self._tokens(text) > budget:
             text = text[: budget * self.characters_per_token]
             finish_reason = FinishReason.LENGTH
+        return text, finish_reason, chosen
+
+    def _generation(
+        self,
+        text: str,
+        *,
+        messages: Sequence[ChatMessage],
+        finish_reason: FinishReason,
+    ) -> Generation:
         return Generation(
             text=text,
             model=self.model,
