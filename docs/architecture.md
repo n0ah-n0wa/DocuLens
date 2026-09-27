@@ -56,8 +56,8 @@ Principles the specification fixes (§1, §4, §90):
 | Core                   | `packages/core`            | `doculens-core` / `doculens`          | domain, application and infrastructure layers                       |
 | API                    | `apps/api`                 | `doculens-api` / `doculens_api`       | FastAPI: health, auth, users, collections, documents, conversations |
 | Worker                 | `services/document-worker` | `doculens-worker` / `doculens_worker` | queue-driven interface layer (entrypoint only)                      |
-| Web                    | `apps/web`                 | `@doculens/web`                       | Next.js app shell (auth screens, authenticated layout, dashboard)   |
-| Shared contracts       | `packages/shared-types`    | `@doculens/shared-types`              | TypeScript API contracts (error envelope, auth tokens, user)        |
+| Web                    | `apps/web`                 | `@doculens/web`                       | Next.js app: auth shell + document/collection management UI         |
+| Shared contracts       | `packages/shared-types`    | `@doculens/shared-types`              | TypeScript API contracts (errors, auth, documents, collections)     |
 | Infrastructure         | `infrastructure/terraform` | —                                     | staging and production roots (no resources yet)                     |
 | Images and local stack | `docker/`                  | —                                     | API and worker images; PostgreSQL, Redis, Chroma                    |
 
@@ -123,10 +123,11 @@ ERROR / EMPTY` states, responsive layout and WCAG-oriented accessibility.
   The transport for that (serving the PDF) is part of `OQ-3`, because the API Gateway and Lambda
   payload limits that constrain uploads constrain downloads equally.
 
-**Implemented (shell):** login and registration screens, an authenticated layout with a dashboard
-placeholder, a central API client with §35 error parsing and one-shot refresh retry, and Vitest
-coverage for that client layer (ADR-021). Document upload, collections and chat UI are not built
-yet.
+**Implemented (shell + documents):** login and registration screens; authenticated layout;
+dashboard; document list/search/upload/detail with processing-status polling; collection
+CRUD; a central API client with multipart upload support, §35 error parsing and one-shot
+refresh retry; Vitest coverage for client/session/validation helpers (ADR-021). Chat UI is
+not built yet.
 
 **Pending:**
 

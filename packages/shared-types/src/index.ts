@@ -53,3 +53,64 @@ export interface TokenPair {
   token_type: "Bearer";
   expires_in: number;
 }
+
+/** Document processing pipeline (§7.3, ADR-019). */
+export type ProcessingStatus =
+  | "UPLOADED"
+  | "VALIDATING"
+  | "EXTRACTING"
+  | "CHUNKING"
+  | "EMBEDDING"
+  | "INDEXING"
+  | "READY"
+  | "FAILED"
+  | "DELETING"
+  | "DELETED";
+
+export interface Document {
+  id: string;
+  collection_id: string | null;
+  filename: string;
+  mime_type: string;
+  file_size: number;
+  page_count: number | null;
+  processing_status: ProcessingStatus;
+  processing_error: string | null;
+  chunk_count: number;
+  created_at: string;
+  updated_at: string;
+  indexed_at: string | null;
+  /** Opaque PDF/extraction metadata; treat values as untrusted text (§53). */
+  metadata: Record<string, unknown>;
+}
+
+export interface UpdateDocumentRequest {
+  filename?: string;
+  /** Omit to leave unchanged; `null` detaches from the current collection. */
+  collection_id?: string | null;
+}
+
+export interface ListDocumentsParams {
+  collection_id?: string;
+  /** Literal case-insensitive filename substring. */
+  q?: string;
+}
+
+export interface Collection {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateCollectionRequest {
+  name: string;
+  description?: string | null;
+}
+
+export interface UpdateCollectionRequest {
+  name?: string;
+  /** Omit to leave unchanged; `null` clears the description. */
+  description?: string | null;
+}

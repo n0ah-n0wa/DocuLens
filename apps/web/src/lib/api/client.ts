@@ -14,6 +14,10 @@ export type HttpMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
 export interface RequestOptions {
   method?: HttpMethod;
+  /**
+   * JSON-serialisable body, or `FormData` for multipart uploads.
+   * `FormData` must not set Content-Type — the browser supplies the boundary.
+   */
   body?: unknown;
   /** When false, the Authorization header is omitted (auth endpoints). */
   auth?: boolean;
@@ -83,7 +87,6 @@ async function refreshAccessToken(): Promise<boolean> {
     }
     const requestId = newRequestId();
     try {
-      // Raw fetch avoids re-entering apiRequest refresh logic.
       const response = await fetch(`${appConfig.apiBaseUrl}/api/v1/auth/refresh`, {
         method: "POST",
         headers: {
@@ -125,11 +128,12 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const method = options.method ?? "GET";
   const useAuth = options.auth !== false;
   const requestId = newRequestId();
+  const isMultipart = typeof FormData !== "undefined" && options.body instanceof FormData;
   const headers: Record<string, string> = {
     Accept: "application/json",
     [appConfig.requestIdHeader]: requestId,
   };
-  if (options.body !== undefined) {
+  if (options.body !== undefined && !isMultipart) {
     headers["Content-Type"] = "application/json";
   }
   if (useAuth) {
@@ -141,7 +145,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
   const init: RequestInit = { method, headers };
   if (options.body !== undefined) {
-    init.body = JSON.stringify(options.body);
+    init.body = isMultipart ? (options.body as FormData) : JSON.stringify(options.body);
   }
   if (options.signal !== undefined) {
     init.signal = options.signal;
@@ -166,7 +170,6 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
       if (refreshed) {
         return apiRequest<T>(path, { ...options, skipRefresh: true });
       }
-      // refreshAccessToken already cleared the session on a failed rotation.
     } else {
       clearSessionTokens();
     }

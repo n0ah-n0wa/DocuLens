@@ -1,6 +1,6 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 
-type ButtonVariant = "primary" | "secondary" | "ghost";
+type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 
 const variantClass: Record<ButtonVariant, string> = {
   primary:
@@ -9,6 +9,8 @@ const variantClass: Record<ButtonVariant, string> = {
     "border border-slate-300 bg-white text-slate-900 hover:bg-slate-50 disabled:text-slate-400 focus-visible:outline-slate-400",
   ghost:
     "text-slate-700 hover:bg-slate-100 disabled:text-slate-400 focus-visible:outline-slate-400",
+  danger:
+    "bg-red-700 text-white hover:bg-red-800 disabled:bg-red-300 focus-visible:outline-red-700",
 };
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -17,17 +19,21 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   children: ReactNode;
 }
 
-export function Button({
-  variant = "primary",
-  loading = false,
-  disabled,
-  children,
-  className = "",
-  type = "button",
-  ...rest
-}: ButtonProps) {
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  {
+    variant = "primary",
+    loading = false,
+    disabled,
+    children,
+    className = "",
+    type = "button",
+    ...rest
+  },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       type={type}
       disabled={disabled === true || loading}
       aria-busy={loading || undefined}
@@ -38,4 +44,4 @@ export function Button({
       {children}
     </button>
   );
-}
+});

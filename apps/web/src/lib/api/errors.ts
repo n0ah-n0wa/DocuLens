@@ -35,12 +35,54 @@ export function isApiErrorResponse(value: unknown): value is ApiErrorResponse {
   );
 }
 
-export function messageForApiError(error: unknown, fallback = "Something went wrong."): string {
+export interface DescribedApiError {
+  message: string;
+  code?: string;
+  requestId?: string;
+  /** Present for DUPLICATE_DOCUMENT when the API returns the existing id. */
+  existingDocumentId?: string;
+}
+
+function detailMessage(details: ApiErrorBody["details"], location: string): string | undefined {
+  return details?.find((detail) => detail.location === location)?.message;
+}
+
+/** Structured presentation helper for forms and alerts. */
+export function describeApiError(
+  error: unknown,
+  fallback = "Something went wrong.",
+): DescribedApiError {
   if (error instanceof ApiError) {
-    return error.message;
+    const existingDocumentId = detailMessage(error.details, "existing_document_id");
+    let message = error.message;
+
+    if (error.code === "DUPLICATE_DOCUMENT") {
+      message = existingDocumentId
+        ? `${error.message} Open the existing document to continue.`
+        : error.message;
+    } else if (error.status === 429 || error.code === "RATE_LIMITED") {
+      message = error.message || "Too many requests. Wait a moment and try again.";
+    } else if (error.status === 413 || error.code === "FILE_TOO_LARGE") {
+      message = error.message || "The file is too large to upload.";
+    } else if (error.code === "UNSUPPORTED_FILE_TYPE" || error.code === "INVALID_FILE_SIGNATURE") {
+      message = error.message || "Only valid PDF files can be uploaded.";
+    } else if (error.code === "EMPTY_FILE") {
+      message = error.message || "The selected file is empty.";
+    }
+
+    return {
+      message,
+      code: error.code,
+      requestId: error.requestId,
+      ...(existingDocumentId !== undefined ? { existingDocumentId } : {}),
+    };
   }
   if (error instanceof Error && error.message) {
-    return error.message;
+    return { message: error.message };
   }
-  return fallback;
+  return { message: fallback };
+}
+
+export function messageForApiError(error: unknown, fallback = "Something went wrong."): string {
+  return describeApiError(error, fallback).message;
 }

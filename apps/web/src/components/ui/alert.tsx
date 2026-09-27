@@ -5,6 +5,8 @@ export interface AlertProps {
   title?: string;
   id?: string;
   children: ReactNode;
+  /** Optional correlation / request id shown for supportability. */
+  requestId?: string | undefined;
 }
 
 const toneClass = {
@@ -12,7 +14,7 @@ const toneClass = {
   info: "border-slate-200 bg-slate-50 text-slate-800",
 } as const;
 
-export function Alert({ tone = "error", title, id, children }: AlertProps) {
+export function Alert({ tone = "error", title, id, children, requestId }: AlertProps) {
   return (
     <div
       id={id}
@@ -21,6 +23,9 @@ export function Alert({ tone = "error", title, id, children }: AlertProps) {
     >
       {title ? <p className="font-medium">{title}</p> : null}
       <div className={title ? "mt-1" : undefined}>{children}</div>
+      {requestId ? (
+        <p className="mt-2 font-mono text-xs opacity-80">Request ID: {requestId}</p>
+      ) : null}
     </div>
   );
 }
