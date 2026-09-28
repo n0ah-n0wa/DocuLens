@@ -41,6 +41,15 @@ jobs:
         run: uv run mypy
       - name: Tests
         run: uv run pytest
+      - name: RAG evaluation
+        run: uv run python -m evals
+      - name: Upload RAG evaluation results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rag-eval-results
+          path: docs/eval/latest.json
+          if-no-files-found: warn
       - name: Documentation links
         run: uv run python scripts/check_doc_links.py
 

@@ -118,7 +118,11 @@ Where new code goes:
 `make check` runs, in order: `ruff format --check`, Prettier check, `ruff check`, ESLint,
 `mypy --strict`, `tsc --noEmit`, `pytest` (branch coverage, 90% floor), `next build`, and
 `make docs-check` (Prettier plus `scripts/check_doc_links.py`, which fails on any broken relative
-Markdown link).
+Markdown link). CI also runs the deterministic RAG evaluation suite (`make eval` /
+`uv run python -m evals`; see [`evals/README.md`](../evals/README.md)), which writes
+machine-readable results to `docs/eval/latest.json` (see
+[`docs/eval/methodology.md`](eval/methodology.md) for what a PASS does and does not prove) and
+uploads them as a CI artifact.
 CI additionally builds and scans the Docker images, runs gitleaks, pip-audit and pnpm audit, and
 validates Terraform. A pull request is mergeable only when all of it is green (§59, §82).
 

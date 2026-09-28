@@ -4,7 +4,7 @@
 .DEFAULT_GOAL := help
 COMPOSE := docker compose --project-directory . -f docker/compose.yaml
 
-.PHONY: help bootstrap format format-check lint typecheck test test-e2e test-e2e-critical build docs-check check \
+.PHONY: help bootstrap format format-check lint typecheck test test-e2e test-e2e-critical eval build docs-check check \
         db-upgrade db-downgrade db-revision docker-build infra-up infra-down infra-logs clean
 
 help: ## Show this help
@@ -41,6 +41,9 @@ test-e2e: ## Run Playwright smoke e2e (requires `make build` first)
 
 test-e2e-critical: ## Run critical Playwright suite (API + worker + infra must be up; `make build` first)
 	pnpm run test:e2e:critical
+
+eval: ## Run the deterministic RAG evaluation suite (SPECIFICATIONS.md §62)
+	uv run python -m evals
 
 db-upgrade: ## Apply all Alembic migrations to DATABASE_URL (from .env)
 	uv run alembic -c packages/core/alembic.ini upgrade head
