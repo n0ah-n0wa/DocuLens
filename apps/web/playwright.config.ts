@@ -3,20 +3,31 @@ import { defineConfig, devices } from "@playwright/test";
 const port = 3000;
 const baseURL = `http://127.0.0.1:${port}`;
 
-// Run `pnpm build` before `pnpm test:e2e`: the web server below serves the production build.
+// Run `pnpm build` before e2e: the web server below serves the production build.
+// Default CI/local: `--project=smoke`. Full stack: `--project=critical` (see test:e2e:critical).
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  // Full-stack critical path needs API + worker + compose; keep it opt-in.
-  testIgnore: process.env.CRITICAL_PATH === "1" ? [] : [/critical-path\.spec\.ts/],
   reporter: process.env.CI ? [["github"], ["html", { open: "never" }]] : "list",
   use: {
     baseURL,
     trace: "on-first-retry",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "smoke",
+      testMatch: /smoke\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "critical",
+      testMatch: /critical-path\.spec\.ts/,
+      timeout: 180_000,
+      use: { ...devices["Desktop Chrome"] },
+    },
+  ],
   webServer: {
     command: `pnpm exec next start --port ${port}`,
     url: baseURL,

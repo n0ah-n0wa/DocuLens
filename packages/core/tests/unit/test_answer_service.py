@@ -96,7 +96,7 @@ async def test_a_question_is_answered_cited_and_persisted(world: World) -> None:
     (citation,) = result.citations  # [1] is the best-ranked chunk of the prompt
     assert citation.quoted_text == TEXTS[0]
     assert citation.page_number == 1
-    assert citation.citation_order == 0
+    assert citation.citation_order == 1
     assert citation.message_id == result.assistant_message_id
     assert citation.chunk_id is not None
     assert citation.reranking_score is None
@@ -176,7 +176,7 @@ async def test_invalid_references_are_dropped_and_counted(world: World) -> None:
 
     assert result.outcome is AnswerOutcome.ANSWERED
     assert result.answer == "Leave is twenty-five days [2]. Parents get sixteen weeks [3]. See [1]."
-    assert [c.citation_order for c in result.citations] == [0, 1, 2]
+    assert [c.citation_order for c in result.citations] == [2, 3, 1]
     assert result.retrieval.invalid_references == 2
     assert len({c.chunk_id for c in result.citations}) == 3
 

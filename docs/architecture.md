@@ -662,10 +662,15 @@ flowchart LR
 Actions are pinned to commit SHAs, Dependabot maintains every ecosystem, and `make check` runs the
 same commands locally ([ADR-010](decisions/ADR-010-repository-tooling.md)).
 
-**Planned** (§59–§61, §86): an integration-test job with PostgreSQL, Redis, ChromaDB and
-S3-compatible service containers once the first adapters exist; on merge to `main`, build → test →
-security scan → deploy staging → smoke tests → manual approval → production; branch protection
-requiring green CI and review. Production deployment never depends on a developer machine.
+**Implemented** (§59–§61, §86): an integration-test path for adapters via pytest + testcontainers
+in the Python job, and a dedicated **Web · critical Playwright e2e** CI job that starts PostgreSQL,
+Redis and ChromaDB, runs migrations, serves the API and document worker with fake AI providers,
+builds the web app against that API, and executes the critical Playwright project
+(`pnpm run test:e2e:critical`). Smoke Playwright remains in the lighter Web job.
+
+**Planned** (§59–§61, §86): on merge to `main`, build → test → security scan → deploy staging →
+smoke tests → manual approval → production; branch protection requiring green CI and review.
+Production deployment never depends on a developer machine.
 
 ---
 

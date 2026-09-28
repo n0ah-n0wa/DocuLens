@@ -98,7 +98,7 @@ def test_citations_quote_the_evidence_in_reference_order() -> None:
     )
 
     assert [c.id for c in citations] == [UUID(int=1), UUID(int=2)]
-    assert [c.citation_order for c in citations] == [0, 1]
+    assert [c.citation_order for c in citations] == [2, 1]
     assert all(c.message_id == message for c in citations)
     reranked, plain = citations
     assert reranked.document_id == second.document_id

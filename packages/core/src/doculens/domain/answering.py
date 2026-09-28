@@ -120,7 +120,7 @@ def build_citations(
     """One citation per referenced context item, quoting the evidence, in reference order."""
     by_index = {item.index: item.evidence for item in context.items}
     citations: list[Citation] = []
-    for order, index in enumerate(cited):
+    for index in cited:
         evidence = by_index[index]
         recorded = evidence.metadata.get("retrieval_score")
         retrieval_score = float(recorded) if isinstance(recorded, int | float) else None
@@ -133,7 +133,8 @@ def build_citations(
                 page_number=evidence.page_number,
                 quoted_text=evidence.text[:max_quote_characters],
                 retrieval_score=retrieval_score if retrieval_score is not None else evidence.score,
-                citation_order=order,
+                # Match the 1-based ``[n]`` markers in the answer text (UI citation chips).
+                citation_order=index,
                 chunk_id=evidence.chunk_id,
                 reranking_score=evidence.score if reranked else None,
             )

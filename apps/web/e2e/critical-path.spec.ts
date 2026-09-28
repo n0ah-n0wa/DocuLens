@@ -1,140 +1,128 @@
 /**
- * Critical path against a running local stack (API :8000, web :3000, compose infra).
- * Opt-in only (ignored by default CI e2e):
- *   CRITICAL_PATH=1 pnpm --filter @doculens/web exec playwright test e2e/critical-path.spec.ts
+ * Critical end-to-end flows against a running DocuLens stack (API, worker, compose infra).
+ *
+ * Local / CI:
+ *   NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000 pnpm run build
+ *   pnpm run test:e2e:critical
+ *
+ * Requires API at NEXT_PUBLIC_API_BASE_URL (default http://127.0.0.1:8000), migrations applied,
+ * and fake embedding/LLM providers. Document Ready is driven by the worker consumer or the
+ * `doculens_worker process` CLI fallback used by the helpers.
+ *
+ * Tests share one browser page so the in-memory access token and sessionStorage refresh token
+ * survive across steps (DocuLens does not use cookies for auth). Each run uses isolated emails
+ * and a fresh PDF; temp PDF files are removed in afterAll.
  */
-import { expect, test } from "@playwright/test";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { expect, test, type Browser, type Page } from "@playwright/test";
 
-const email = `checkpoint-${Date.now()}@example.com`;
-const password = "correct horse battery staple";
-
-function buildHandbookPdf(): string {
-  const dir = mkdtempSync(join(tmpdir(), "doculens-cp-"));
-  const pdfPath = join(dir, "handbook.pdf");
-  const repoRoot = join(process.cwd(), "..", "..");
-  const script = `
-from pathlib import Path
-from doculens.testing.pdfs import pdf_with_pages
-path = Path(${JSON.stringify(pdfPath)})
-path.write_bytes(pdf_with_pages([
-    "Annual leave is twenty-five days per year.",
-    "Parental leave is sixteen weeks at full pay.",
-]))
-print(path)
-`;
-  execFileSync("uv", ["run", "python", "-c", script], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  return pdfPath;
-}
+import { login, logout, registerAccount, uniqueCredentials } from "./helpers/auth";
+import {
+  askQuestion,
+  createConversation,
+  expectGroundedAnswer,
+  inspectFirstCitation,
+} from "./helpers/chat";
+import { createCollection } from "./helpers/collections";
+import {
+  deleteCurrentDocument,
+  moveDocumentToCollection,
+  uploadPdf,
+  waitForDocumentReady,
+} from "./helpers/documents";
+import { buildHandbookPdf, cleanupHandbookPdf } from "./helpers/pdf";
 
 test.describe.configure({ mode: "serial", timeout: 180_000 });
 
-test("critical path: login → upload → process → ask → citation → follow-up", async ({
-  page,
-  request,
-}) => {
-  const pdfPath = buildHandbookPdf();
+const owner = uniqueCredentials("owner");
+const stranger = uniqueCredentials("stranger");
+const collectionName = `Policies ${Date.now()}`;
 
-  // Register (creates account) then land on dashboard via login form after register
-  await page.goto("/register");
-  await page.getByLabel("Email").fill(email);
-  await page.getByLabel("Password").fill(password);
-  await page.getByRole("button", { name: /create account|register|sign up/i }).click();
-  await expect(page).toHaveURL(/\/(dashboard|login)/, { timeout: 30_000 });
+let browser: Browser;
+let page: Page;
+let pdfPath: string;
+let documentId: string;
+let documentUrl: string;
+let collectionId: string;
 
-  if (page.url().includes("/login")) {
-    await page.getByLabel("Email").fill(email);
-    await page.getByLabel("Password").fill(password);
-    await page.getByRole("button", { name: /sign in/i }).click();
-  }
-  await expect(page).toHaveURL(/\/dashboard/, { timeout: 30_000 });
+test.beforeAll(async ({ browser: testBrowser }) => {
+  browser = testBrowser;
+  page = await browser.newPage();
+  pdfPath = buildHandbookPdf();
+});
 
-  // Upload
-  await page.goto("/documents/upload");
-  await page.locator("#upload-file").setInputFiles(pdfPath);
-  await page.getByRole("button", { name: /upload document/i }).click();
-  await expect(page).toHaveURL(/\/documents\/[0-9a-f-]+/, { timeout: 30_000 });
-  const documentUrl = page.url();
-  const documentId = documentUrl.split("/").pop()!;
+test.afterAll(async () => {
+  await page.close();
+  cleanupHandbookPdf(pdfPath);
+});
 
-  // Drive processing if the queue did not pick it up (memory queue is per-process)
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const badge = page.getByLabel(/Processing status:/i);
-    const label = ((await badge.textContent()) ?? "").trim();
-    if (/ready/i.test(label)) {
-      break;
-    }
-    if (/failed/i.test(label)) {
-      throw new Error(`Document processing failed: ${label}`);
-    }
-    if (attempt === 0 || attempt % 5 === 0) {
-      try {
-        execFileSync("uv", ["run", "python", "-m", "doculens_worker", "process", documentId], {
-          cwd: join(process.cwd(), "../.."),
-          encoding: "utf8",
-          timeout: 120_000,
-        });
-      } catch {
-        // Worker may race with an in-flight transition; keep polling.
-      }
-    }
-    await page.reload();
-    await page.waitForTimeout(1500);
-  }
-  await expect(page.getByLabel(/Processing status:/i)).toContainText(/ready/i, {
-    timeout: 10_000,
+test("registers an isolated account", async () => {
+  await registerAccount(page, owner);
+});
+
+test("logs out and signs back in", async () => {
+  await expect(page.getByTestId("signed-in-email")).toHaveText(owner.email);
+  await logout(page);
+  await login(page, owner);
+});
+
+test("creates a collection", async () => {
+  collectionId = await createCollection(page, collectionName, "E2E leave policies");
+  expect(collectionId).toMatch(/^[0-9a-f-]{36}$/i);
+});
+
+test("uploads a PDF and shows processing status through Ready", async () => {
+  documentId = await uploadPdf(page, pdfPath);
+  documentUrl = page.url();
+
+  const status = page.getByLabel(/Processing status:/i);
+  await expect(status).toBeVisible();
+  await expect(status).toContainText(
+    /Uploaded|Validating|Extracting|Chunking|Embedding|Indexing|Ready/i,
+  );
+
+  await waitForDocumentReady(page, documentId);
+  await expect(status).toContainText(/Ready/i);
+});
+
+test("moves the document into the collection", async () => {
+  await page.goto(documentUrl);
+  await expect(page.getByLabel(/Processing status:/i)).toContainText(/Ready/i);
+  await moveDocumentToCollection(page, collectionName);
+  await expect(page.locator("#document-collection")).toHaveValue(collectionId);
+});
+
+test("creates a conversation, asks, receives a grounded answer, and inspects a citation", async () => {
+  await createConversation(page, "Leave policy");
+  await askQuestion(page, "How many days of annual leave do employees get?");
+  await expectGroundedAnswer(page, { assistantTurns: 1 });
+  await inspectFirstCitation(page);
+});
+
+test("asks a follow-up question in the same conversation", async () => {
+  await askQuestion(page, "What about parental leave?");
+  await expectGroundedAnswer(page, { assistantTurns: 2 });
+});
+
+test("deletes the document", async () => {
+  await page.goto(documentUrl);
+  await deleteCurrentDocument(page);
+  await page.goto(documentUrl);
+  await expect(page.getByRole("alert").filter({ hasText: "Document unavailable" })).toBeVisible({
+    timeout: 30_000,
+  });
+});
+
+test("enforces the authorization boundary for another account", async () => {
+  await logout(page);
+  await registerAccount(page, stranger);
+
+  await page.goto(documentUrl);
+  await expect(page.getByRole("alert").filter({ hasText: "Document unavailable" })).toBeVisible({
+    timeout: 30_000,
   });
 
-  // Ask
-  await page.goto("/chat");
-  await page.getByRole("button", { name: /^new$/i }).click();
-  await page.getByLabel("Title").fill("Leave policy");
-  await page.getByRole("button", { name: /create conversation/i }).click();
-  await expect(page).toHaveURL(/\/chat\/[0-9a-f-]+/, { timeout: 30_000 });
-
-  await page
-    .getByRole("textbox", { name: "Question" })
-    .fill("How many days of annual leave do employees get?");
-  await page.getByRole("button", { name: /^ask$/i }).click();
-
-  await expect(page.getByText(/Fake answer to:|twenty-five|annual leave/i).first()).toBeVisible({
-    timeout: 60_000,
+  await page.goto(`/collections/${collectionId}`);
+  await expect(page.getByRole("alert").filter({ hasText: "Collection unavailable" })).toBeVisible({
+    timeout: 30_000,
   });
-
-  // Inspect citation (panel may be toggled on smaller viewports)
-  const citationsToggle = page.getByRole("button", { name: /citations/i });
-  if (await citationsToggle.isVisible()) {
-    const expanded = await citationsToggle.getAttribute("aria-expanded");
-    if (expanded === "false") {
-      await citationsToggle.click();
-    }
-  }
-  await expect(page.getByRole("heading", { name: "Citations" })).toBeVisible();
-  await expect(page.getByText(/Annual leave is twenty-five days/i).first()).toBeVisible({
-    timeout: 15_000,
-  });
-  const citationChip = page.getByRole("button", { name: /Show citation/i }).first();
-  if (await citationChip.isVisible()) {
-    await citationChip.click();
-  }
-  await expect(
-    page.getByText(/Source document unavailable|handbook\.pdf|Open document/i).first(),
-  ).toBeVisible();
-
-  // Follow-up
-  await page.getByRole("textbox", { name: "Question" }).fill("What about parental leave?");
-  await page.getByRole("button", { name: /^ask$/i }).click();
-  await expect(page.getByText(/parental|sixteen weeks|Fake answer to:/i).first()).toBeVisible({
-    timeout: 60_000,
-  });
-
-  // Sanity: API still healthy
-  const health = await request.get("http://127.0.0.1:8000/health/live");
-  expect(health.ok()).toBeTruthy();
 });

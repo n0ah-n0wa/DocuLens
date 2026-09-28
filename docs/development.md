@@ -32,7 +32,11 @@ pnpm --filter @doculens/web exec playwright install chromium
 
 uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest
 pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm run test:web && pnpm run build
-pnpm run test:e2e              # after pnpm run build
+pnpm run test:e2e              # smoke (after pnpm run build)
+# Critical suite needs compose infra + API + worker (see §61 / make test-e2e-critical):
+# uv run python scripts/write_critical_e2e_env.py && make infra-up && make db-upgrade
+# uv run uvicorn ... &  uv run python -m doculens_worker &
+# NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000 pnpm run build && pnpm run test:e2e:critical
 ```
 
 Line endings are forced to LF on every platform by `.gitattributes`; editors pick up
