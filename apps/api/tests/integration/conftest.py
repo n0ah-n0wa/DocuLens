@@ -8,7 +8,14 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from doculens.infrastructure.config import Environment, LogFormat, LogLevel, VectorStoreKind
+from doculens.infrastructure.config import (
+    Environment,
+    LogFormat,
+    LogLevel,
+    QueueBackend,
+    RateLimitBackend,
+    VectorStoreKind,
+)
 from doculens.testing.postgres import (
     DatabaseUnavailableError,
     provisioned_database_url,
@@ -44,6 +51,8 @@ def db_client(migrated_database_url: str, tmp_path: Path) -> Iterator[TestClient
         auth_rate_limit_attempts=1000,
         storage_local_root=tmp_path / "storage",
         vector_store=VectorStoreKind.MEMORY,
+        queue_backend=QueueBackend.MEMORY,
+        rate_limit_backend=RateLimitBackend.MEMORY,
     )
     with TestClient(create_app(settings)) as client:
         yield client

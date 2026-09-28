@@ -10,6 +10,7 @@ import pytest
 from doculens.application.ingestion import DocumentIntakeService, UploadLimits
 from doculens.domain.collections import CollectionNotFoundError
 from doculens.domain.documents import ProcessingStatus
+from doculens.domain.errors import InvalidInputError
 from doculens.domain.ingestion import (
     DocumentLimitReachedError,
     DuplicateDocumentError,
@@ -102,7 +103,7 @@ async def test_a_valid_upload_is_stored_then_registered(
 @pytest.mark.parametrize(
     "case",
     [
-        ("notes.txt", "application/pdf", b"%PDF-1.7 x", UnsupportedFileTypeError),
+        ("notes.txt", "application/pdf", b"%PDF-1.7 x", InvalidInputError),
         ("notes.pdf", "image/png", b"%PDF-1.7 x", UnsupportedFileTypeError),
         ("notes.pdf", "application/pdf", b"", EmptyUploadError),
         ("notes.pdf", "application/pdf", b"%PDF-1.7 " + b"x" * (64 * 1024), FileTooLargeError),

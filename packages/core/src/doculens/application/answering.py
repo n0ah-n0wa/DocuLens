@@ -54,7 +54,7 @@ from doculens.domain.answering import (
     is_insufficient,
     normalise_text,
 )
-from doculens.domain.common import clean_label
+from doculens.domain.common import title_from_text
 from doculens.domain.conversations import (
     MAX_CONVERSATION_TITLE_LENGTH,
     Citation,
@@ -381,17 +381,12 @@ class AnswerService:
             outcome = AnswerOutcome.INSUFFICIENT_EVIDENCE
         else:
             prompt = self._prompt_builder.build(question, retrieval.context, history=state.history)
-            raw_parts: list[str] = []
             try:
                 async with asyncio.timeout(self._limits.generation_timeout_seconds):
                     async for event in self._llm.generate_stream(
                         prompt.messages, options=self._options
                     ):
-                        if event.delta:
-                            raw_parts.append(event.delta)
-                            # Progressive text is untrusted and may still contain invalid
-                            # references; the client must replace it with the final answer.
-                            yield AnswerToken(event.delta)
+                        # Deltas are discarded until detect_violation passes (below).
                         if event.done is not None:
                             generation = event.done
             except TimeoutError as exc:
@@ -427,6 +422,10 @@ class AnswerService:
                 answer_text = cleaned.text
                 outcome = AnswerOutcome.ANSWERED
                 cited = cleaned.cited
+                # Safe to surface text only after the leak gate: emit the final answer as
+                # deltas so SSE clients still receive progressive events without pre-check leaks.
+                if answer_text:
+                    yield AnswerToken(answer_text)
         generation_ms = _elapsed_ms(generation_started)
 
         persistence_started = time.perf_counter()
@@ -506,11 +505,7 @@ class AnswerService:
                     id=self._new_id(),
                     owner_id=owner_id,
                     collection_id=collection_id,
-                    title=clean_label(
-                        question[:MAX_CONVERSATION_TITLE_LENGTH],
-                        field="title",
-                        max_length=MAX_CONVERSATION_TITLE_LENGTH,
-                    ),
+                    title=title_from_text(question, max_length=MAX_CONVERSATION_TITLE_LENGTH),
                     created_at=now,
                     updated_at=now,
                 )

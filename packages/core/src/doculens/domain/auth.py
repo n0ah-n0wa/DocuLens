@@ -83,6 +83,10 @@ class PasswordPolicy:
         if password.strip().lower() == email.strip().lower():
             message = "The password must not be the email address."
             raise PasswordPolicyError(message)
+        # A single repeated character is trivially guessable even when long enough.
+        if len(set(password)) == 1:
+            message = "The password must not be a single repeated character."
+            raise PasswordPolicyError(message)
 
 
 @dataclass(frozen=True, slots=True)

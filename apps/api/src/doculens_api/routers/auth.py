@@ -8,7 +8,8 @@ Every endpoint is rate limited per client address before any credential work hap
 bounds brute-force attempts on one account, credential stuffing across accounts, and Argon2 CPU
 spend per client. Login is additionally limited per account (keyed by a hash of the normalised
 email, so the limiter store never holds an address), which caps guesses against one account from
-a distributed attacker. The limiter store is the in-process adapter until the Redis one lands.
+a distributed attacker. Deployed environments require a shared Redis limiter
+(``RATE_LIMIT_BACKEND=redis``).
 """
 
 import hashlib

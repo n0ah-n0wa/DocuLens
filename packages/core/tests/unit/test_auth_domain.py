@@ -40,6 +40,7 @@ def test_password_policy_accepts_a_reasonable_password() -> None:
         ("short", "at least 12"),
         ("x" * 129, "at most 128"),
         ("Alice@Example.com", "must not be the email"),
+        ("aaaaaaaaaaaa", "single repeated character"),
     ],
 )
 def test_password_policy_rejects_weak_passwords(password: str, fragment: str) -> None:

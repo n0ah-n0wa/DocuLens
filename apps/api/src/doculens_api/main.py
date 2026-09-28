@@ -34,7 +34,7 @@ from doculens.infrastructure.pdf import build_upload_limits
 from doculens.infrastructure.persistence.database import Database, DatabaseProbe
 from doculens.infrastructure.queue import JobQueueProbe, build_job_queue
 from doculens.infrastructure.rag import build_rag_service
-from doculens.infrastructure.ratelimit import InMemoryRateLimiter
+from doculens.infrastructure.ratelimit import build_rate_limiter
 from doculens.infrastructure.security.passwords import Argon2PasswordHasher
 from doculens.infrastructure.security.tokens import JwtTokenCodec
 from doculens.infrastructure.storage import ObjectStorageProbe, build_object_storage
@@ -46,6 +46,10 @@ from doculens_api.middleware.request_context import RequestContextMiddleware
 from doculens_api.middleware.security_headers import SecurityHeadersMiddleware
 from doculens_api.routers import auth, collections, conversations, documents, health, users
 from doculens_api.settings import ApiSettings
+
+# Browser clients only need these methods; wildcards widen the CSRF/CORS surface.
+_CORS_ALLOW_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+_CORS_ALLOW_HEADERS = ("Authorization", "Content-Type", "Accept")
 
 OPENAPI_TAGS = [
     {"name": "health", "description": "Liveness and readiness probes for the platform."},
@@ -76,7 +80,7 @@ def create_app(
     ``settings`` defaults to the validated environment configuration. ``probes`` are the dependency
     checks exposed by ``/health/ready`` (``None`` means the real database). ``unit_of_work_factory``
     defaults to the PostgreSQL unit of work; tests may pass an in-memory one. ``rate_limiter``
-    defaults to the in-process limiter (§37) until the Redis adapter exists. ``llm_provider``
+    defaults to Redis when configured (§37, §47), otherwise the in-process limiter. ``llm_provider``
     and ``embedding_provider`` override the configured providers (tests script fakes).
     """
     resolved = settings if settings is not None else load_settings(ApiSettings)
@@ -145,7 +149,7 @@ def create_app(
             vectors=vector_store,
             llm=llm_provider,
         ),
-        rate_limiter=rate_limiter if rate_limiter is not None else InMemoryRateLimiter(),
+        rate_limiter=rate_limiter if rate_limiter is not None else build_rate_limiter(resolved),
         object_storage=object_storage,
         vector_store=vector_store,
     )
@@ -193,7 +197,7 @@ def create_app(
     # Middleware added later wraps the earlier ones; the request-context middleware goes last so
     # that it is outermost and every response, including those from other middleware, is
     # correlated and access-logged. CORS (when configured) wraps that so browsers can call the API.
-    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware, enable_hsts=resolved.is_deployed)
     app.add_middleware(RequestContextMiddleware, header_name=resolved.request_id_header)
     cors_origins = resolved.cors_origin_list
     if cors_origins:
@@ -201,8 +205,8 @@ def create_app(
             CORSMiddleware,
             allow_origins=cors_origins,
             allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
+            allow_methods=list(_CORS_ALLOW_METHODS),
+            allow_headers=[*_CORS_ALLOW_HEADERS, resolved.request_id_header],
             expose_headers=[resolved.request_id_header],
         )
     return app

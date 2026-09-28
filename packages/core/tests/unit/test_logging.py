@@ -61,13 +61,13 @@ def test_standard_library_extra_fields_become_structured_fields(
     )
 
     logging.getLogger("doculens.application.auth").info(
-        "login failed", extra={"operation": "auth.login_failed", "reason": "wrong_password"}
+        "login failed", extra={"operation": "auth.login_failed", "reason": "invalid_credentials"}
     )
 
     (entry,) = _json_lines(capsys.readouterr().out)
     assert entry["message"] == "login failed"
     assert entry["operation"] == "auth.login_failed"
-    assert entry["reason"] == "wrong_password"
+    assert entry["reason"] == "invalid_credentials"
 
 
 def test_uvicorn_access_lines_are_suppressed_in_favour_of_the_middleware_entry(

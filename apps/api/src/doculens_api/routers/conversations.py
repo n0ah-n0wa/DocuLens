@@ -325,6 +325,12 @@ async def ask_question(
         limit=settings.ask_rate_limit_attempts,
         window_seconds=settings.ask_rate_limit_window_seconds,
     )
+    await enforce(
+        limiter,
+        f"ask:daily:user:{user.id}",
+        limit=settings.ask_daily_rate_limit_attempts,
+        window_seconds=settings.ask_daily_rate_limit_window_seconds,
+    )
     result = await rag.answer(
         RagQuery(owner_id=user.id, question=body.question, document_ids=body.document_ids),
         conversation_id=conversation_id,
@@ -376,6 +382,12 @@ async def ask_question_stream(  # noqa: PLR0913, PLR0917 - FastAPI injects each 
         f"ask:user:{user.id}",
         limit=settings.ask_rate_limit_attempts,
         window_seconds=settings.ask_rate_limit_window_seconds,
+    )
+    await enforce(
+        limiter,
+        f"ask:daily:user:{user.id}",
+        limit=settings.ask_daily_rate_limit_attempts,
+        window_seconds=settings.ask_daily_rate_limit_window_seconds,
     )
     request_id = request_id_of(request)
 

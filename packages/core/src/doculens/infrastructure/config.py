@@ -93,6 +93,19 @@ class QueueBackend(StrEnum):
     SQS = "sqs"
 
 
+class RateLimitBackend(StrEnum):
+    """Shared rate-limit store selected by ``RATE_LIMIT_BACKEND`` (§37, §47).
+
+    ``auto`` follows the job queue: Redis when ``QUEUE_BACKEND=redis``, otherwise in-process.
+    Deployed fleets that need shared auth/upload/ask budgets should set ``redis`` explicitly
+    (ElastiCache or equivalent) even when the queue is SQS.
+    """
+
+    AUTO = "auto"
+    MEMORY = "memory"
+    REDIS = "redis"
+
+
 class ConfigurationError(RuntimeError):
     """Raised at start-up when the environment does not describe a valid configuration."""
 
@@ -258,7 +271,14 @@ class CoreSettings(BaseSettings):
     )
     redis_url: str | None = Field(
         default="redis://localhost:6379/0",
-        description="Redis URL for the local queue and future shared rate limits (§47).",
+        description="Redis URL for the local queue and shared rate limits (§37, §47).",
+    )
+    rate_limit_backend: RateLimitBackend = Field(
+        default=RateLimitBackend.AUTO,
+        description=(
+            "Where rate-limit counters live (§37). auto uses Redis when QUEUE_BACKEND=redis; "
+            "set redis explicitly for multi-instance fleets that share an auth budget."
+        ),
     )
     queue_name: str = Field(
         default="doculens-documents",
@@ -500,6 +520,16 @@ class CoreSettings(BaseSettings):
                 "QUEUE_PROCESSING_TIMEOUT_SECONDS must be less than "
                 "QUEUE_VISIBILITY_TIMEOUT_SECONDS"
             )
+        if self.rate_limit_backend is not RateLimitBackend.REDIS:
+            problems.append(
+                "RATE_LIMIT_BACKEND must be redis when deployed "
+                "(auth/upload/ask budgets must be shared across instances, §37)"
+            )
+        if self.redis_url is None:
+            problems.append("REDIS_URL is required when deployed (shared rate limits, §37, §47)")
+        elif not self.redis_url.startswith("rediss://"):
+            # TLS-only Redis URLs in staging/production so rate-limit keys are not cleartext.
+            problems.append("REDIS_URL must use rediss:// when deployed (encryption in transit)")
         return problems
 
     def _deployed_storage_problems(self) -> list[str]:
@@ -520,6 +550,11 @@ class CoreSettings(BaseSettings):
             problems.append(
                 "STORAGE_ACCESS_KEY_ID must be unset (use the execution role, least privilege §57)"
             )
+        if self.storage_expected_bucket_owner is None:
+            problems.append(
+                "STORAGE_EXPECTED_BUCKET_OWNER is required when deployed "
+                "(confused-deputy / wrong-account guard, §57)"
+            )
         return problems
 
     def _deployed_ai_problems(self) -> list[str]:
@@ -528,6 +563,10 @@ class CoreSettings(BaseSettings):
             problems.append("VECTOR_STORE must be chroma (§16)")
         if not self.chroma_url.startswith("https://"):
             problems.append("CHROMA_URL must use https (encryption in transit, §53)")
+        if self.chroma_api_token is None:
+            problems.append(
+                "CHROMA_API_TOKEN is required when deployed (Chroma must not be open, §16)"
+            )
         if self.embedding_provider is EmbeddingProviderKind.FAKE:
             problems.append("EMBEDDING_PROVIDER must not be fake (no real vectors, §15)")
         if not self.embedding_api_base_url.startswith("https://"):

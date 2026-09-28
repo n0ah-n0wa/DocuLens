@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from doculens.domain.auth import RefreshToken
+from doculens.domain.auth import EmailAlreadyRegisteredError, RefreshToken
 from doculens.domain.collections import Collection
 from doculens.domain.conversations import Citation, Conversation, Message
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
@@ -95,8 +95,14 @@ class SqlAlchemyUserRepository:
         self._session = session
 
     async def add(self, user: User) -> None:
-        self._session.add(mappers.user_to_row(user))
-        await self._session.flush()
+        try:
+            async with self._session.begin_nested():
+                self._session.add(mappers.user_to_row(user))
+                await self._session.flush()
+        except IntegrityError as exc:
+            if "uq_users_email" not in str(exc.orig):
+                raise
+            raise EmailAlreadyRegisteredError from exc
 
     async def lock(self, user_id: UUID) -> None:
         await self._session.execute(

@@ -30,6 +30,10 @@ DEPLOYED = {
     "queue_sqs_url": "https://sqs.eu-central-1.amazonaws.com/123456789012/doculens",
     "queue_sqs_dlq_url": "https://sqs.eu-central-1.amazonaws.com/123456789012/doculens-dlq",
     "queue_sqs_region": "eu-central-1",
+    "rate_limit_backend": "redis",
+    "redis_url": "rediss://redis.internal:6379/0",
+    "storage_expected_bucket_owner": "123456789012",
+    "chroma_api_token": SecretStr("chroma-deployed-token"),
 }
 
 
@@ -76,8 +80,6 @@ def test_deployed_environments_require_chroma_over_https() -> None:
     with pytest.raises(ValidationError, match="CHROMA_URL must use https"):
         _settings(**DEPLOYED, chroma_url="http://chroma.internal:8000")
 
-    settings = _settings(
-        **DEPLOYED, chroma_url="https://chroma.internal:8000", chroma_api_token=SecretStr("t")
-    )
+    settings = _settings(**DEPLOYED, chroma_url="https://chroma.internal:8000")
     assert settings.vector_store is VectorStoreKind.CHROMA
     assert "SecretStr" in repr(settings.chroma_api_token)

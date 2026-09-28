@@ -13,7 +13,7 @@ from types import TracebackType
 from typing import Self
 from uuid import UUID
 
-from doculens.domain.auth import RefreshToken
+from doculens.domain.auth import EmailAlreadyRegisteredError, RefreshToken
 from doculens.domain.collections import Collection
 from doculens.domain.conversations import Citation, Conversation, Message
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
@@ -43,6 +43,8 @@ class InMemoryUserRepository:
         self._store = store
 
     async def add(self, user: User) -> None:
+        if any(existing.email == user.email for existing in self._store.users.values()):
+            raise EmailAlreadyRegisteredError
         self._store.users[user.id] = user
 
     async def get(self, user_id: UUID) -> User | None:

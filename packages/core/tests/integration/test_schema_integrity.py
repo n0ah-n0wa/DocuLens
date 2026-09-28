@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from doculens.domain.auth import EmailAlreadyRegisteredError
 from doculens.domain.conversations import Citation, Message, MessageRole
 from doculens.domain.documents import DocumentChunk, DocumentPage
 from doculens.domain.errors import ConflictError
@@ -61,7 +62,7 @@ async def _seed_document(database: Database, factories: type[Factories]) -> tupl
 async def test_email_is_unique(database: Database, factories: type[Factories]) -> None:
     async with database.unit_of_work() as uow:
         await uow.users.add(factories.user("same@example.com"))
-        with pytest.raises(IntegrityError, match="uq_users_email"):
+        with pytest.raises(EmailAlreadyRegisteredError):
             await uow.users.add(factories.user("same@example.com"))
 
 

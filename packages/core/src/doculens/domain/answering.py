@@ -27,6 +27,8 @@ from doculens.domain.prompting import (
     INSUFFICIENT_EVIDENCE_STATEMENT,
     QUESTION_TAG,
     SYSTEM_INSTRUCTIONS,
+    escape_prompt_text,
+    sanitize_untrusted_text,
 )
 from doculens.domain.reranking import RerankingReport
 from doculens.domain.retrieval import AssembledContext, words_of
@@ -71,11 +73,24 @@ def is_insufficient(text: str) -> bool:
     return normalise_text(text).lower().startswith(INSUFFICIENT_EVIDENCE_STATEMENT.lower())
 
 
+# Contiguous policy text long enough that accidental overlap with a normal answer is unlikely.
+_POLICY_OVERLAP_WINDOW = 80
+
+
 def detect_violation(text: str) -> str | None:
-    """Why an answer must be withheld, or None: today, reproducing the system policy."""
+    """Why an answer must be withheld, or None: reproducing the system policy."""
     normalised = normalise_text(text).lower()
     leaked = sum(1 for marker in _POLICY_MARKERS if marker.lower() in normalised)
-    return "system_prompt_leak" if leaked >= 2 else None  # noqa: PLR2004 - two policy lines
+    if leaked >= 2:  # noqa: PLR2004 - two policy lines
+        return "system_prompt_leak"
+    policy = normalise_text(SYSTEM_INSTRUCTIONS).lower()
+    if len(normalised) < _POLICY_OVERLAP_WINDOW or len(policy) < _POLICY_OVERLAP_WINDOW:
+        return None
+    step = _POLICY_OVERLAP_WINDOW // 2
+    for start in range(0, len(policy) - _POLICY_OVERLAP_WINDOW + 1, step):
+        if policy[start : start + _POLICY_OVERLAP_WINDOW] in normalised:
+            return "system_prompt_leak"
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,13 +172,20 @@ REWRITE_HISTORY_TAG = "conversation"
 
 
 def build_rewrite_messages(question: str, history: Sequence[ChatMessage]) -> list[ChatMessage]:
-    """The rewriting prompt: instructions, the earlier turns as data, the question last."""
+    """The rewriting prompt: instructions, the earlier turns as data, the question last.
+
+    History and question text are sanitised and angle-escaped the same way as the grounded answer
+    prompt, so a question cannot forge ``</question>`` / ``<conversation>`` sections.
+    """
     transcript = "\n".join(
-        f"{message.role.value.lower()}: {normalise_text(message.content)}" for message in history
+        f"{message.role.value.lower()}: "
+        f"{escape_prompt_text(normalise_text(sanitize_untrusted_text(message.content)))}"
+        for message in history
     )
+    safe_question = escape_prompt_text(normalise_text(sanitize_untrusted_text(question)))
     user = (
         f"<{REWRITE_HISTORY_TAG}>\n{transcript}\n</{REWRITE_HISTORY_TAG}>\n\n"
-        f"<{QUESTION_TAG}>\n{normalise_text(question)}\n</{QUESTION_TAG}>"
+        f"<{QUESTION_TAG}>\n{safe_question}\n</{QUESTION_TAG}>"
     )
     return [
         ChatMessage(MessageRole.SYSTEM, REWRITE_INSTRUCTIONS),
@@ -178,7 +200,10 @@ def question_of_rewrite_prompt(messages: Sequence[ChatMessage]) -> str | None:
     match = re.search(
         rf"<{QUESTION_TAG}>\n(.*)\n</{QUESTION_TAG}>", messages[-1].content, re.DOTALL
     )
-    return match.group(1) if match else None
+    if match is None:
+        return None
+    # Undo prompt escaping so fakes can echo a usable question string.
+    return match.group(1).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 
 
 MIN_CONTENT_WORD_LENGTH = 5  # shorter words are function words or too ambiguous to police

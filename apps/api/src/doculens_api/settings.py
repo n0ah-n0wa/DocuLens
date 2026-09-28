@@ -1,10 +1,34 @@
 """Settings owned by the API process, on top of the core settings."""
 
-from pydantic import Field, SecretStr
+from __future__ import annotations
+
+import math
+from collections import Counter
+from urllib.parse import urlparse
+
+from pydantic import Field, SecretStr, field_validator
 
 from doculens.infrastructure.config import CoreSettings
 
 MIN_JWT_SECRET_LENGTH = 32
+MIN_JWT_SECRET_UNIQUE_CHARS = 10
+MIN_JWT_SECRET_ENTROPY_BITS = 3.0
+_FORBIDDEN_JWT_SECRETS = frozenset(
+    {
+        "replace-with-a-random-string-of-at-least-32-characters",
+        "change-me-change-me-change-me-change-me",
+        "your-secret-key-must-be-at-least-32-chars",
+    }
+)
+
+
+def jwt_secret_entropy_bits(secret: str) -> float:
+    """Shannon entropy in bits per character; used to reject low-diversity signing keys."""
+    length = len(secret)
+    if length == 0:
+        return 0.0
+    counts = Counter(secret)
+    return -sum((count / length) * math.log2(count / length) for count in counts.values())
 
 
 class ApiSettings(CoreSettings):
@@ -57,17 +81,102 @@ class ApiSettings(CoreSettings):
         default=30,
         ge=1,
         le=10_000,
-        description="Questions allowed per authenticated user per window (§37).",
+        description="Questions allowed per authenticated user per short window (§37).",
     )
     ask_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+    ask_daily_rate_limit_attempts: int = Field(
+        default=500,
+        ge=1,
+        le=1_000_000,
+        description=(
+            "Questions allowed per authenticated user per day (§37, §39). "
+            "Bounds AI spend beyond the short-window burst limit."
+        ),
+    )
+    ask_daily_rate_limit_window_seconds: int = Field(
+        default=86_400,
+        ge=60,
+        le=604_800,
+        description="Daily ask quota window in seconds (default 24h).",
+    )
+    ai_ops_rate_limit_attempts: int = Field(
+        default=30,
+        ge=1,
+        le=10_000,
+        description=(
+            "Document reprocess/reindex attempts per authenticated user per short window (§37)."
+        ),
+    )
+    ai_ops_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
+    ai_ops_daily_rate_limit_attempts: int = Field(
+        default=200,
+        ge=1,
+        le=1_000_000,
+        description=(
+            "Document reprocess/reindex attempts per authenticated user per day (§37, §39)."
+        ),
+    )
+    ai_ops_daily_rate_limit_window_seconds: int = Field(
+        default=86_400,
+        ge=60,
+        le=604_800,
+        description="Daily AI-ops quota window in seconds (default 24h).",
+    )
     cors_origins: str = Field(
         default="",
         description=(
             "Comma-separated browser origins allowed for CORS (OQ-19 provisional). "
             "Empty means local defaults (127.0.0.1/localhost:3000) when not deployed, "
-            "and no CORS when deployed."
+            "and no CORS when deployed. Wildcard origins are rejected."
         ),
     )
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def _require_jwt_secret_entropy(cls, value: SecretStr) -> SecretStr:
+        secret = value.get_secret_value()
+        if secret in _FORBIDDEN_JWT_SECRETS or secret.lower() in _FORBIDDEN_JWT_SECRETS:
+            message = "JWT_SECRET must not be a documented placeholder value"
+            raise ValueError(message)
+        if len(set(secret)) < MIN_JWT_SECRET_UNIQUE_CHARS:
+            message = (
+                f"JWT_SECRET must contain at least {MIN_JWT_SECRET_UNIQUE_CHARS} "
+                "distinct characters"
+            )
+            raise ValueError(message)
+        if jwt_secret_entropy_bits(secret) < MIN_JWT_SECRET_ENTROPY_BITS:
+            message = (
+                f"JWT_SECRET entropy is too low "
+                f"(need at least {MIN_JWT_SECRET_ENTROPY_BITS} bits per character)"
+            )
+            raise ValueError(message)
+        return value
+
+    @field_validator("cors_origins")
+    @classmethod
+    def _reject_unsafe_cors_origins(cls, value: str) -> str:
+        for part in (item.strip() for item in value.split(",")):
+            if not part:
+                continue
+            if part == "*":
+                message = "CORS_ORIGINS must not include '*' (credentials cannot be wildcarded)"
+                raise ValueError(message)
+            parsed = urlparse(part)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.path
+                not in {
+                    "",
+                    "/",
+                }
+            ):
+                message = (
+                    "CORS_ORIGINS entries must be absolute http(s) origins "
+                    f"without a path (got {part!r})"
+                )
+                raise ValueError(message)
+        return value
 
     @property
     def docs_enabled(self) -> bool:

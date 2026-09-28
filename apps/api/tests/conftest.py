@@ -6,7 +6,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from doculens.infrastructure.config import Environment, LogFormat, LogLevel, VectorStoreKind
+from doculens.infrastructure.config import (
+    Environment,
+    LogFormat,
+    LogLevel,
+    QueueBackend,
+    RateLimitBackend,
+    VectorStoreKind,
+)
 from doculens.testing.fakes import InMemoryStore, InMemoryUnitOfWork
 from doculens_api.main import create_app
 from doculens_api.settings import ApiSettings
@@ -30,6 +37,8 @@ def settings(tmp_path: Path) -> ApiSettings:
         auth_rate_limit_attempts=1000,
         storage_local_root=tmp_path / "storage",
         vector_store=VectorStoreKind.MEMORY,
+        queue_backend=QueueBackend.MEMORY,
+        rate_limit_backend=RateLimitBackend.MEMORY,
     )
 
 

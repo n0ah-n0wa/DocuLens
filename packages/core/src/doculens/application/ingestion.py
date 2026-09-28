@@ -65,7 +65,12 @@ from doculens.domain.ingestion import (
     validate_upload,
 )
 from doculens.domain.jobs import JobPermanentlyFailedError
-from doculens.domain.storage import ObjectNotFoundError, content_hash, document_object_key
+from doculens.domain.storage import (
+    ObjectNotFoundError,
+    content_hash,
+    document_object_key,
+    key_belongs_to,
+)
 from doculens.domain.time import utc_now
 from doculens.domain.vectors import VectorMetadata, VectorStoreError, vector_id_for
 
@@ -617,8 +622,9 @@ class DocumentProcessor:
 
     async def _fetch(self, document: Document) -> bytes:
         """The original bytes, re-verified against the row before any parser sees them."""
+        key = _require_document_object_key(document)
         try:
-            stored = await self._storage.get(document.storage_key)
+            stored = await self._storage.get(key)
         except ObjectNotFoundError as exc:
             raise StoredFileMissingError(diagnostics="object missing from storage") from exc
         data = stored.data
@@ -678,6 +684,17 @@ def _unexpected(error: Exception) -> PdfRejectedError:
         exc_info=error,
     )
     return ExtractionFailedError(diagnostics=f"{type(error).__name__}: {error}")
+
+
+def _require_document_object_key(document: Document) -> str:
+    """Refuse poisoned storage keys: only the canonical owner/document key may be fetched."""
+    expected = document_object_key(document.owner_id, document.id)
+    if document.storage_key != expected or not key_belongs_to(
+        document.storage_key, document.owner_id
+    ):
+        message = "document storage key does not match the owned object key"
+        raise StoredFileMismatchError(diagnostics=message)
+    return expected
 
 
 __all__ = [

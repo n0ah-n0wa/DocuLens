@@ -228,6 +228,16 @@ def _document(item: ContextItem) -> PromptDocument:
     )
 
 
+def sanitize_untrusted_text(text: str) -> str:
+    """Strip control characters from untrusted prompt data."""
+    return _sanitize(text)
+
+
+def escape_prompt_text(text: str) -> str:
+    """Escape angle brackets so untrusted text cannot forge prompt XML sections."""
+    return _escape(text)
+
+
 def _sanitize(text: str) -> str:
     return _CONTROL_CHARACTERS.sub("", text.replace("\r\n", "\n").replace("\r", "\n"))
 
@@ -255,4 +265,6 @@ __all__ = [
     "PromptDocument",
     "PromptHistoryError",
     "PromptLimits",
+    "escape_prompt_text",
+    "sanitize_untrusted_text",
 ]

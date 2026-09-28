@@ -14,6 +14,7 @@ from doculens.domain.ingestion import (
     TooManyPagesError,
 )
 from doculens.infrastructure.pdf import ExtractionLimits, PyMuPdfExtractor
+from doculens.infrastructure.pdf.pymupdf_extractor import _apply_memory_limit
 from doculens.testing.pdfs import (
     ZERO_PAGE_PDF,
     corrupted_pdf,
@@ -214,3 +215,9 @@ async def test_a_parser_answer_that_is_not_json_is_refused(sample: bytes) -> Non
         await extractor.inspect(sample, max_pages=10)
 
     assert "not valid JSON" in (excinfo.value.diagnostics or "")
+
+
+def test_memory_limit_helper_is_best_effort() -> None:
+    """Applying a process memory cap must never crash the worker if the OS refuses."""
+    _apply_memory_limit(None)
+    _apply_memory_limit(512 * 1024 * 1024)

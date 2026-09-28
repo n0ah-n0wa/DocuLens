@@ -33,7 +33,11 @@ from doculens.domain.documents import (
     ProcessingStatus,
 )
 from doculens.domain.errors import InvalidInputError
-from doculens.domain.storage import StorageUnavailableError
+from doculens.domain.storage import (
+    StorageUnavailableError,
+    document_object_key,
+    key_belongs_to,
+)
 from doculens.domain.time import utc_now
 from doculens.domain.vectors import VectorStoreError, VectorStoreUnavailableError
 
@@ -50,6 +54,9 @@ def clean_filename(filename: str) -> str:
     cleaned = clean_label(filename, field="filename", max_length=MAX_FILENAME_LENGTH)
     if "/" in cleaned or "\\" in cleaned or cleaned in {".", ".."}:
         message = "The filename must not contain path separators."
+        raise InvalidInputError(message)
+    if not cleaned.lower().endswith(".pdf"):
+        message = "The filename must end with .pdf."
         raise InvalidInputError(message)
     return cleaned
 
@@ -281,15 +288,27 @@ class DocumentService:
     async def _purge_object(self, document: Document) -> None:
         if self._storage is None:
             return
+        expected = document_object_key(document.owner_id, document.id)
+        if document.storage_key != expected or not key_belongs_to(
+            document.storage_key, document.owner_id
+        ):
+            logger.warning(
+                "document object purge skipped: storage key is not owned",
+                extra={
+                    "operation": "document.delete_object",
+                    "document_id": str(document.id),
+                },
+            )
+            return
         try:
-            await self._storage.delete(document.storage_key)
+            await self._storage.delete(expected)
         except StorageUnavailableError:
             logger.warning(
                 "document object purge failed",
                 extra={
                     "operation": "document.delete_object",
                     "document_id": str(document.id),
-                    "object_key": document.storage_key,
+                    "object_key": expected,
                 },
             )
             raise

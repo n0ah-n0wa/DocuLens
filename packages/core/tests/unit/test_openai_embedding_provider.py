@@ -327,3 +327,8 @@ async def test_logs_carry_metadata_but_never_the_key(caplog: pytest.LogCaptureFi
     assert "embedding.retry" in rendered
     assert "embedding.batch" in rendered
     assert API_KEY not in rendered
+
+
+def test_http_client_ignores_process_proxy_environment() -> None:
+    subject = provider(Script([None]), Clock())
+    assert subject._client.trust_env is False  # noqa: SLF001

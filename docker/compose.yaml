@@ -11,7 +11,8 @@ name: doculens
 
 services:
   postgres:
-    image: postgres:17.11-alpine
+    # Digest-pinned so local infra does not float when the tag is rebuilt.
+    image: postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-doculens}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-doculens-local-only}
@@ -27,7 +28,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7.4.11-alpine
+    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
@@ -38,7 +39,7 @@ services:
       retries: 10
 
   chroma:
-    image: chromadb/chroma:1.5.9
+    image: chromadb/chroma:1.5.9@sha256:1e0b73a187a28757c572acba508c46f48c9e8b0acaf5c20e6d95cdedce1acdf6
     environment:
       IS_PERSISTENT: "TRUE"
       ANONYMIZED_TELEMETRY: "FALSE"

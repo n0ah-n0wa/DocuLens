@@ -181,8 +181,14 @@ def test_upload_creates_an_uploaded_document(
 def test_upload_rejects_non_pdf_and_duplicates(
     client: TestClient, owner: Owner, sample_pdf: bytes
 ) -> None:
-    refused_type = _upload(
+    refused_extension = _upload(
         client, owner, sample_pdf, filename="notes.txt", content_type="text/plain"
+    )
+    assert refused_extension.status_code == HTTPStatus.BAD_REQUEST
+    assert refused_extension.json()["error"]["code"] == "INVALID_INPUT"
+
+    refused_type = _upload(
+        client, owner, sample_pdf, filename="notes.pdf", content_type="text/plain"
     )
     assert refused_type.status_code == HTTPStatus.BAD_REQUEST
     assert refused_type.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"

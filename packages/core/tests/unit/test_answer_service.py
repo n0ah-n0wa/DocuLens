@@ -494,7 +494,8 @@ async def test_answer_stream_emits_tokens_then_persists_with_citations(world: Wo
     result = next(part for part in parts if not isinstance(part, AnswerToken))
 
     assert result.outcome is AnswerOutcome.ANSWERED
-    assert "".join(tokens) == result.answer or len(tokens) > 0
+    # Tokens are withheld until detect_violation passes, then the final answer is emitted.
+    assert tokens == [result.answer]
     assert result.citations
     assert len(world.store.messages) == 2
 
@@ -507,8 +508,6 @@ async def test_failed_answer_stream_persists_nothing(world: World) -> None:
     tokens: list[str] = []
 
     async def drain_until_failure() -> None:
-        # Partial tokens must be retained if the stream raises mid-flight; a
-        # comprehension would discard them on failure (PERF401 not applicable).
         async for part in world.service().answer_stream(
             world.owner.id, "How do refresh tokens rotate?"
         ):
@@ -518,8 +517,9 @@ async def test_failed_answer_stream_persists_nothing(world: World) -> None:
     with pytest.raises(LLMProviderUnavailableError):
         await drain_until_failure()
 
-    assert tokens  # some progressive text was shown
-    assert world.store.messages == {}  # nothing persisted
+    # No deltas leave the service until the stream completes and the leak gate passes.
+    assert tokens == []
+    assert world.store.messages == {}
     assert world.store.conversations == {}
     assert world.store.citations == {}
 

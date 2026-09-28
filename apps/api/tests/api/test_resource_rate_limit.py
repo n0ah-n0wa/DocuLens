@@ -106,3 +106,49 @@ def test_questions_are_throttled_per_user(limited_app: FastAPI) -> None:
     assert statuses[-1] == HTTPStatus.TOO_MANY_REQUESTS
     assert blocked.json()["error"]["code"] == "RATE_LIMITED"
     assert blocked.headers["Retry-After"] == str(WINDOW)
+
+
+@pytest.fixture
+def daily_limited_app(clock: Clock, tmp_path: Path) -> FastAPI:
+    settings = ApiSettings(
+        _env_file=None,
+        app_env=Environment.LOCAL,
+        log_level=LogLevel.WARNING,
+        log_format=LogFormat.JSON,
+        database_url=SecretStr(UNREACHABLE_DATABASE_URL),
+        jwt_secret=SecretStr(JWT_SECRET),
+        auth_rate_limit_attempts=1000,
+        upload_rate_limit_attempts=1000,
+        ask_rate_limit_attempts=1000,
+        ask_rate_limit_window_seconds=WINDOW,
+        ask_daily_rate_limit_attempts=ATTEMPTS,
+        ask_daily_rate_limit_window_seconds=WINDOW,
+        ai_ops_rate_limit_attempts=1000,
+        ai_ops_daily_rate_limit_attempts=ATTEMPTS,
+        ai_ops_daily_rate_limit_window_seconds=WINDOW,
+        storage_local_root=tmp_path / "storage",
+        vector_store=VectorStoreKind.MEMORY,
+    )
+    store = InMemoryStore()
+    return create_app(
+        settings,
+        probes=[],
+        unit_of_work_factory=lambda: InMemoryUnitOfWork(store),
+        rate_limiter=InMemoryRateLimiter(clock=clock),
+    )
+
+
+def test_questions_are_throttled_by_daily_quota(daily_limited_app: FastAPI) -> None:
+    with TestClient(daily_limited_app) as client:
+        headers = _auth_headers(client, email="daily@example.com")
+        conversation_id = client.post(
+            "/api/v1/conversations", json={"title": "Daily"}, headers=headers
+        ).json()["id"]
+        url = f"/api/v1/conversations/{conversation_id}/messages"
+        statuses = [
+            client.post(url, json={"question": f"Day {index}?"}, headers=headers).status_code
+            for index in range(ATTEMPTS + 1)
+        ]
+
+    assert HTTPStatus.TOO_MANY_REQUESTS not in statuses[:ATTEMPTS]
+    assert statuses[-1] == HTTPStatus.TOO_MANY_REQUESTS

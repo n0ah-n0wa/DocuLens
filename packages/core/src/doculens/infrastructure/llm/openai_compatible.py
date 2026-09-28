@@ -92,6 +92,9 @@ class OpenAICompatibleLLMProvider:
             headers=headers,
             timeout=httpx.Timeout(config.timeout_seconds),
             transport=transport,
+            # Ignore HTTP(S)_PROXY from the process environment so operators cannot silently
+            # redirect provider traffic (SSRF / credential exfiltration via a malicious proxy).
+            trust_env=False,
         )
 
     @property

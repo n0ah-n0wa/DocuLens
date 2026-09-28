@@ -2,6 +2,7 @@
 .git
 .github
 .venv
+.local
 **/__pycache__
 **/*.py[cod]
 **/.pytest_cache
@@ -20,3 +21,4 @@ docker/compose.yaml
 !.env.example
 *.md
 scripts
+requirements-audit.txt

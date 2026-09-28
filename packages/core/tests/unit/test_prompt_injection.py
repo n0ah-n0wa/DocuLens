@@ -340,3 +340,5 @@ def test_violation_detection_is_specific() -> None:
     assert detect_violation("## Citations are important in this report.") is None
     assert detect_violation(INSUFFICIENT_EVIDENCE_STATEMENT) is None
     assert detect_violation("Revenue grew twelve percent [1].") is None
+    # Long contiguous policy text without the heading markers is still a leak.
+    assert detect_violation(SYSTEM_INSTRUCTIONS[80:200]) == "system_prompt_leak"

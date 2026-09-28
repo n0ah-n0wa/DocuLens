@@ -257,3 +257,8 @@ async def test_invalid_prompts_never_reach_the_network() -> None:
         await provider(script).generate([])
 
     assert script.requests == []
+
+
+def test_http_client_ignores_process_proxy_environment() -> None:
+    subject = provider(Script([ok(completion())]))
+    assert subject._client.trust_env is False  # noqa: SLF001

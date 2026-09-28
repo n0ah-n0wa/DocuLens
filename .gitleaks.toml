@@ -1,0 +1,16 @@
+# Gitleaks configuration for DocuLens.
+# Suppressions must document why the finding is not a production secret risk.
+# Do not add blanket allowlists for real credentials.
+
+title = "DocuLens"
+
+[[allowlists]]
+id = "ci-local-playwright-jwt"
+description = """
+Public CI/local Playwright JWT in scripts/write_critical_e2e_env.py.
+Used only with APP_ENV=local and fake AI providers; never a deployed signing key.
+Literal value is intentionally fixed so e2e env files are reproducible.
+"""
+paths = [
+  '''(^|/)scripts/write_critical_e2e_env\.py$''',
+]

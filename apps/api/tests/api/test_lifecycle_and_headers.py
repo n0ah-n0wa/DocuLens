@@ -7,6 +7,10 @@ import pytest
 from fastapi import APIRouter, FastAPI, Response
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
+from starlette.testclient import TestClient as StarletteClient
 
 from doculens.infrastructure.config import (
     EmbeddingProviderKind,
@@ -14,16 +18,36 @@ from doculens.infrastructure.config import (
     LLMProviderKind,
     LogLevel,
     QueueBackend,
+    RateLimitBackend,
     StorageBackend,
     StorageEncryption,
 )
 from doculens_api.main import create_app
+from doculens_api.middleware.security_headers import SecurityHeadersMiddleware
 from doculens_api.settings import ApiSettings
 
 pytestmark = pytest.mark.api
 
 DB_URL = SecretStr("postgresql+asyncpg://doculens:not-a-secret@127.0.0.1:1/doculens")
 JWT = SecretStr("lifecycle-test-secret-that-is-at-least-32-bytes")
+
+_DEPLOYED_PLATFORM = {
+    "storage_backend": StorageBackend.S3,
+    "storage_bucket": "doculens-test-documents",
+    "storage_region": "eu-central-1",
+    "storage_encryption": StorageEncryption.AES256,
+    "embedding_provider": EmbeddingProviderKind.OPENAI,
+    "llm_provider": LLMProviderKind.OPENAI,
+    "chroma_url": "https://chroma.internal:8000",
+    "queue_backend": QueueBackend.SQS,
+    "queue_sqs_url": "https://sqs.eu-central-1.amazonaws.com/123456789012/doculens",
+    "queue_sqs_dlq_url": "https://sqs.eu-central-1.amazonaws.com/123456789012/doculens-dlq",
+    "queue_sqs_region": "eu-central-1",
+    "rate_limit_backend": RateLimitBackend.REDIS,
+    "redis_url": "rediss://redis.internal:6379/0",
+    "storage_expected_bucket_owner": "123456789012",
+    "chroma_api_token": SecretStr("chroma-deployed-token"),
+}
 
 
 def _entries(output: str) -> list[dict[str, object]]:
@@ -50,6 +74,27 @@ def test_every_response_carries_baseline_security_headers(client: TestClient) ->
         assert response.headers["X-Frame-Options"] == "DENY"
         assert response.headers["Referrer-Policy"] == "no-referrer"
         assert response.headers["Cache-Control"] == "no-store"
+        assert response.headers["Permissions-Policy"] == (
+            "camera=(), microphone=(), geolocation=(), payment=()"
+        )
+        assert (
+            response.headers["Content-Security-Policy"]
+            == "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+        )
+        assert response.headers["X-Permitted-Cross-Domain-Policies"] == "none"
+        assert "Strict-Transport-Security" not in response.headers
+
+
+def test_hsts_is_emitted_when_enabled() -> None:
+    async def ok(_: object) -> PlainTextResponse:
+        return PlainTextResponse("ok")
+
+    app = Starlette(routes=[Route("/ping", ok)])
+    app.add_middleware(SecurityHeadersMiddleware, enable_hsts=True)
+    with StarletteClient(app) as client:
+        response = client.get("/ping")
+
+    assert response.headers["Strict-Transport-Security"] == ("max-age=31536000; includeSubDomains")
 
 
 def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
@@ -61,17 +106,7 @@ def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
         app_env=Environment.STAGING,
         database_url=DB_URL,
         jwt_secret=JWT,
-        storage_backend=StorageBackend.S3,
-        storage_bucket="doculens-test-documents",
-        storage_region="eu-central-1",
-        storage_encryption=StorageEncryption.AES256,
-        embedding_provider=EmbeddingProviderKind.OPENAI,
-        llm_provider=LLMProviderKind.OPENAI,
-        chroma_url="https://chroma.internal:8000",
-        queue_backend=QueueBackend.SQS,
-        queue_sqs_url="https://sqs.eu-central-1.amazonaws.com/123456789012/doculens",
-        queue_sqs_dlq_url="https://sqs.eu-central-1.amazonaws.com/123456789012/doculens-dlq",
-        queue_sqs_region="eu-central-1",
+        **_DEPLOYED_PLATFORM,  # type: ignore[arg-type]
     )
     opted_in = ApiSettings(
         _env_file=None,
@@ -79,17 +114,7 @@ def test_docs_default_to_enabled_locally_and_disabled_when_deployed() -> None:
         api_docs_enabled=True,
         database_url=DB_URL,
         jwt_secret=JWT,
-        storage_backend=StorageBackend.S3,
-        storage_bucket="doculens-test-documents",
-        storage_region="eu-central-1",
-        storage_encryption=StorageEncryption.AES256,
-        embedding_provider=EmbeddingProviderKind.OPENAI,
-        llm_provider=LLMProviderKind.OPENAI,
-        chroma_url="https://chroma.internal:8000",
-        queue_backend=QueueBackend.SQS,
-        queue_sqs_url="https://sqs.eu-central-1.amazonaws.com/123456789012/doculens",
-        queue_sqs_dlq_url="https://sqs.eu-central-1.amazonaws.com/123456789012/doculens-dlq",
-        queue_sqs_region="eu-central-1",
+        **_DEPLOYED_PLATFORM,  # type: ignore[arg-type]
     )
 
     assert local.docs_enabled is True

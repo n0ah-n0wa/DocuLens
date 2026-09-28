@@ -24,6 +24,8 @@ def test_main_exits_cleanly_and_logs_a_structured_start_event(
     monkeypatch.setenv("LOG_FORMAT", "json")
     monkeypatch.setenv("APP_ENV", "local")
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@127.0.0.1:1/doculens")
+    monkeypatch.setenv("QUEUE_BACKEND", "memory")
+    monkeypatch.setenv("RATE_LIMIT_BACKEND", "memory")
 
     async def fake_run(
         settings: CoreSettings,
@@ -76,6 +78,8 @@ def test_process_runs_one_document_and_maps_the_outcome_to_an_exit_code(
 ) -> None:
     monkeypatch.setenv("LOG_FORMAT", "json")
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@127.0.0.1:1/doculens")
+    monkeypatch.setenv("QUEUE_BACKEND", "memory")
+    monkeypatch.setenv("RATE_LIMIT_BACKEND", "memory")
     document_id = uuid4()
     outcomes = iter([ProcessingOutcome.PROCESSED, ProcessingOutcome.FAILED])
 

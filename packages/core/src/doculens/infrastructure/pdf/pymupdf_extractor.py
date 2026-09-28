@@ -1,9 +1,10 @@
 """PyMuPDF-based ``PdfExtractor`` that parses in an isolated, bounded child process (§13, §53, §64).
 
 A PDF is attacker-controlled input to a large C library. Every parse therefore runs in a fresh
-process with a wall-clock limit and, where the platform allows, an address-space limit. A parser
-hang or crash ends that child, never the worker: a timeout becomes ``ExtractionTimeoutError``, a
-crash ``ExtractionFailedError``, and the document ends in ``FAILED`` with a safe message.
+process with a wall-clock limit and an address-space / commit-charge limit (POSIX ``RLIMIT_AS``,
+Windows Job Object process-memory limit). A parser hang or crash ends that child, never the
+worker: a timeout becomes ``ExtractionTimeoutError``, a crash ``ExtractionFailedError``, and the
+document ends in ``FAILED`` with a safe message.
 
 The isolation boundary is treated as untrusted in both directions:
 
@@ -44,6 +45,9 @@ from doculens.domain.ingestion import (
 
 if sys.platform != "win32":
     import resource  # POSIX only: address-space limits are not available on Windows
+else:
+    import ctypes
+    from ctypes import wintypes
 
 logger = logging.getLogger(__name__)
 
@@ -237,8 +241,77 @@ if sys.platform != "win32":
 else:
 
     def _apply_memory_limit(memory_limit_bytes: int | None) -> None:
-        """Windows has no address-space limit; the wall-clock limit still applies."""
-        del memory_limit_bytes
+        """Cap the parser child's commit charge via a Windows Job Object (best effort)."""
+        if memory_limit_bytes is None:
+            return
+        try:
+            _apply_windows_job_memory_limit(memory_limit_bytes)
+        except OSError:
+            return
+
+    def _apply_windows_job_memory_limit(memory_limit_bytes: int) -> None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):  # noqa: N801
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IO_COUNTERS(ctypes.Structure):  # noqa: N801
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):  # noqa: N801
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        job_object_extended_limit_information = 9
+        job_object_limit_process_memory = 0x00000100
+
+        handle = kernel32.CreateJobObjectW(None, None)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = job_object_limit_process_memory
+        info.ProcessMemoryLimit = memory_limit_bytes
+
+        if not kernel32.SetInformationJobObject(
+            handle,
+            job_object_extended_limit_information,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            error = ctypes.WinError(ctypes.get_last_error())
+            kernel32.CloseHandle(handle)
+            raise error
+
+        current = kernel32.GetCurrentProcess()
+        if not kernel32.AssignProcessToJobObject(handle, current):
+            error = ctypes.WinError(ctypes.get_last_error())
+            kernel32.CloseHandle(handle)
+            raise error
+        # Keep the job handle open for the life of the child; the OS closes it on exit.
 
 
 def _parse(mode: str, data: bytes, max_pages: int, limits: ExtractionLimits) -> dict[str, Any]:

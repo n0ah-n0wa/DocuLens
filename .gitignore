@@ -3,6 +3,12 @@
 .env.*
 !.env.example
 
+# Local runtime artefacts (filesystem storage, e2e PIDs/logs); never commit.
+.local/
+
+# Ephemeral pip-audit export produced by CI / local security scans.
+requirements-audit.txt
+
 # Generated RAG evaluation PDFs (`uv run python -m evals --materialise-pdfs …`)
 evals/corpus/pdfs/
 

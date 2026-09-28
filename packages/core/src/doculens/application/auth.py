@@ -145,7 +145,7 @@ class AuthService:
             stored_hash = user.password_hash if user is not None else self._padding_hash
             verified = await self._verify(stored_hash, password)
             if user is None or not verified:
-                self._log_login_failed("unknown_email" if user is None else "wrong_password")
+                self._log_login_failed("invalid_credentials")
                 raise InvalidCredentialsError
             self._ensure_may_act(user)
             now = self._clock()

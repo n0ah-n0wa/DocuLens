@@ -9,7 +9,7 @@ from http import HTTPStatus
 from typing import Annotated, Self
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, Query, Response, UploadFile
+from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from doculens.application.ratelimit import enforce
@@ -39,6 +39,9 @@ router = APIRouter(
 )
 
 MEBIBYTE = 1024 * 1024
+# Extra allowance for multipart field headers around the PDF part.
+_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
 
 UPLOAD_RESPONSES = {
     **NOT_FOUND_RESPONSE,
@@ -91,11 +94,18 @@ class UpdateDocumentRequest(BaseModel):
 
 
 async def _read_upload(file: UploadFile, *, max_bytes: int) -> bytes:
-    """Read at most ``max_bytes``; one extra byte detects oversize without buffering more."""
-    data = await file.read(max_bytes + 1)
-    if len(data) > max_bytes:
-        raise FileTooLargeError
-    return data
+    """Read at most ``max_bytes`` in chunks so oversize uploads abort before a full buffer."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise FileTooLargeError
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.post(
@@ -109,7 +119,8 @@ async def _read_upload(file: UploadFile, *, max_bytes: int) -> bytes:
     ),
     responses=UPLOAD_RESPONSES,
 )
-async def upload_document(
+async def upload_document(  # noqa: PLR0913, PLR0917 - FastAPI injects each collaborator
+    request: Request,
     user: CurrentUserDep,
     intake: DocumentIntakeDep,
     settings: SettingsDep,
@@ -127,6 +138,14 @@ async def upload_document(
         window_seconds=settings.upload_rate_limit_window_seconds,
     )
     max_bytes = settings.max_file_size_mb * MEBIBYTE
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = -1
+        if declared > max_bytes + _MULTIPART_OVERHEAD_BYTES:
+            raise FileTooLargeError
     data = await _read_upload(file, max_bytes=max_bytes)
     if not data:
         raise EmptyUploadError
@@ -210,20 +229,52 @@ async def delete_document(
 @router.post(
     "/{document_id}/reprocess",
     summary="Re-run the pipeline from the stored original",
-    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE, **RATE_LIMITED_RESPONSE},
 )
 async def reprocess_document(
-    document_id: UUID, user: CurrentUserDep, documents: DocumentServiceDep
+    document_id: UUID,
+    user: CurrentUserDep,
+    documents: DocumentServiceDep,
+    settings: SettingsDep,
+    limiter: RateLimiterDep,
 ) -> DocumentResponse:
+    await enforce(
+        limiter,
+        f"ai-ops:user:{user.id}",
+        limit=settings.ai_ops_rate_limit_attempts,
+        window_seconds=settings.ai_ops_rate_limit_window_seconds,
+    )
+    await enforce(
+        limiter,
+        f"ai-ops:daily:user:{user.id}",
+        limit=settings.ai_ops_daily_rate_limit_attempts,
+        window_seconds=settings.ai_ops_daily_rate_limit_window_seconds,
+    )
     return DocumentResponse.from_document(await documents.reprocess(user.id, document_id))
 
 
 @router.post(
     "/{document_id}/reindex",
     summary="Re-chunk and re-embed from stored pages",
-    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE},
+    responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE, **RATE_LIMITED_RESPONSE},
 )
 async def reindex_document(
-    document_id: UUID, user: CurrentUserDep, documents: DocumentServiceDep
+    document_id: UUID,
+    user: CurrentUserDep,
+    documents: DocumentServiceDep,
+    settings: SettingsDep,
+    limiter: RateLimiterDep,
 ) -> DocumentResponse:
+    await enforce(
+        limiter,
+        f"ai-ops:user:{user.id}",
+        limit=settings.ai_ops_rate_limit_attempts,
+        window_seconds=settings.ai_ops_rate_limit_window_seconds,
+    )
+    await enforce(
+        limiter,
+        f"ai-ops:daily:user:{user.id}",
+        limit=settings.ai_ops_daily_rate_limit_attempts,
+        window_seconds=settings.ai_ops_daily_rate_limit_window_seconds,
+    )
     return DocumentResponse.from_document(await documents.reindex(user.id, document_id))
