@@ -5,14 +5,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ENV_BODY = """\
+# Local/CI Playwright only — never a deployed secret.
+_JWT_SECRET = "ci-critical-e2e-jwt-secret-at-least-32-chars"  # noqa: S105 gitleaks:allow
+
+_ENV_TEMPLATE = """\
 APP_ENV=local
 LOG_LEVEL=INFO
 LOG_FORMAT=console
 REQUEST_ID_HEADER=X-Request-ID
 API_DOCS_ENABLED=true
 HEALTH_PROBE_TIMEOUT_SECONDS=2
-JWT_SECRET=ci-critical-e2e-jwt-secret-at-least-32-chars
+JWT_SECRET={jwt_secret}
 JWT_ISSUER=doculens
 JWT_AUDIENCE=doculens-api
 ACCESS_TOKEN_TTL_SECONDS=900
@@ -104,10 +107,14 @@ CITATION_MAX_QUOTE_CHARACTERS=500
 """
 
 
+def env_body() -> str:
+    return _ENV_TEMPLATE.format(jwt_secret=_JWT_SECRET)
+
+
 def main(argv: list[str]) -> int:
     root = Path(__file__).resolve().parents[1]
     target = Path(argv[1]) if len(argv) > 1 else root / ".env"
-    target.write_text(ENV_BODY, encoding="utf-8")
+    target.write_text(env_body(), encoding="utf-8")
     sys.stdout.write(f"Wrote {target}\n")
     return 0
 
