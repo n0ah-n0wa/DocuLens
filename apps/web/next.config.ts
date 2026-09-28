@@ -12,13 +12,29 @@ const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:80
   "",
 );
 
+/** Localhost and 127.0.0.1 are distinct CSP origins; allow both when targeting loopback. */
+function connectSrcOrigins(apiOrigin: string): string {
+  const origins = new Set<string>([apiOrigin]);
+  try {
+    const url = new URL(apiOrigin);
+    if (url.hostname === "localhost") {
+      origins.add(`${url.protocol}//127.0.0.1${url.port ? `:${url.port}` : ""}`);
+    } else if (url.hostname === "127.0.0.1") {
+      origins.add(`${url.protocol}//localhost${url.port ? `:${url.port}` : ""}`);
+    }
+  } catch {
+    // Keep the configured origin only when it is not a parseable absolute URL.
+  }
+  return [...origins].join(" ");
+}
+
 const contentSecurityPolicy = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self'",
-  `connect-src 'self' ${apiBaseUrl}`,
+  `connect-src 'self' ${connectSrcOrigins(apiBaseUrl)}`,
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",

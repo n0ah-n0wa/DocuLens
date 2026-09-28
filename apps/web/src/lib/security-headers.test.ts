@@ -24,6 +24,8 @@ describe("next.config security headers", () => {
     expect(headers["Permissions-Policy"]).toContain("camera=()");
     expect(headers["Content-Security-Policy"]).toContain("frame-ancestors 'none'");
     expect(headers["Content-Security-Policy"]).toContain("connect-src 'self'");
+    // Loopback aliases are both allowed so CI (127.0.0.1) and local (localhost) stay aligned.
     expect(headers["Content-Security-Policy"]).toContain("http://localhost:8000");
+    expect(headers["Content-Security-Policy"]).toContain("http://127.0.0.1:8000");
   });
 });
