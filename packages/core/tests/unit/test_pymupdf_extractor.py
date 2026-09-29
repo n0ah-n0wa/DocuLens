@@ -227,13 +227,16 @@ def test_memory_limit_helper_is_best_effort(monkeypatch: pytest.MonkeyPatch) -> 
     """
     _apply_memory_limit(None)
 
+    message = "refused"
+
     def refuse(*_args: object, **_kwargs: object) -> None:
-        raise OSError("refused")
+        raise OSError(message)
 
     if sys.platform != "win32":
-        import resource
-
-        monkeypatch.setattr(resource, "setrlimit", refuse)
+        monkeypatch.setattr(
+            "doculens.infrastructure.pdf.pymupdf_extractor.resource.setrlimit",
+            refuse,
+        )
     else:
         monkeypatch.setattr(
             "doculens.infrastructure.pdf.pymupdf_extractor._apply_windows_job_memory_limit",
