@@ -5,7 +5,7 @@
 COMPOSE := docker compose --project-directory . -f docker/compose.yaml
 
 .PHONY: help bootstrap format format-check lint typecheck test test-e2e test-e2e-critical eval build docs-check check \
-        db-upgrade db-downgrade db-revision docker-build infra-up infra-down infra-logs clean
+        db-upgrade db-downgrade db-revision docker-build docker-verify infra-up infra-down infra-logs clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -63,9 +63,14 @@ build: ## Build the web application
 
 check: format-check lint typecheck test build docs-check ## Run every local quality gate
 
-docker-build: ## Build the API and worker images
+docker-build: ## Build the API and worker images (cached layers OK for local use)
 	docker build -f docker/api.Dockerfile -t doculens-api:local .
 	docker build -f docker/worker.Dockerfile -t doculens-worker:local .
+
+docker-verify: ## Clean-build production images and run hardening smoke checks (§56)
+	docker build --no-cache --pull -f docker/api.Dockerfile -t doculens-api:verify .
+	docker build --no-cache --pull -f docker/worker.Dockerfile -t doculens-worker:verify .
+	uv run python scripts/verify_production_images.py
 
 infra-up: ## Start local PostgreSQL, Redis, ChromaDB and MinIO, then create the documents bucket
 	$(COMPOSE) up --detach --wait

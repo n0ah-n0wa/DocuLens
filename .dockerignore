@@ -1,24 +1,58 @@
-# Build context for docker/*.Dockerfile is the repository root. Keep it small.
+# Build context for docker/*.Dockerfile is the repository root. Keep it small and secret-free.
+#
+# Intentionally excluded: secrets, local env files, VCS/CI metadata, caches, tests, the web app
+# (no production web image yet — OQ-19), Terraform, docs, and developer tooling.
+
 .git
 .github
+.cursor
 .venv
 .local
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.tox
+.coverage
+htmlcov
+coverage.xml
 **/__pycache__
 **/*.py[cod]
 **/.pytest_cache
 **/.mypy_cache
 **/.ruff_cache
+**/.turbo
+**/.next
 node_modules
 **/node_modules
 **/tests
+**/test
+**/*_test.py
+**/conftest.py
 apps/web
 packages/shared-types
 docs
+evals
 infrastructure
 docker/compose.yaml
+scripts
+requirements-audit.txt
+*.md
+!README.md
+
+# Secrets and local configuration — never bake into an image.
 .env
 .env.*
 !.env.example
-*.md
-scripts
-requirements-audit.txt
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+id_rsa*
+id_ed25519*
+credentials.json
+**/secrets/**
+**/secret/**
