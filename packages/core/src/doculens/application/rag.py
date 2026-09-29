@@ -24,6 +24,7 @@ class RagQuery:
     question: str
     document_ids: Sequence[UUID] | None = None
     collection_id: UUID | None = None
+    idempotency_key: str | None = None
 
     def scope(self) -> RetrievalScope:
         """Validated scope; raises ``InvalidRetrievalScopeError`` for an unusable selection."""
@@ -58,6 +59,7 @@ class RagService:
             conversation_id=conversation_id,
             document_ids=scope.document_ids,
             collection_id=scope.collection_id,
+            idempotency_key=query.idempotency_key,
         )
 
     def answer_stream(
@@ -71,6 +73,7 @@ class RagService:
             conversation_id=conversation_id,
             document_ids=scope.document_ids,
             collection_id=scope.collection_id,
+            idempotency_key=query.idempotency_key,
         )
 
 

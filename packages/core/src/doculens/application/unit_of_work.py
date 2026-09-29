@@ -9,7 +9,7 @@ nothing is durable until ``commit`` is awaited. Leaving the context without comm
 """
 
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
@@ -18,6 +18,7 @@ from doculens.domain.auth import RefreshToken
 from doculens.domain.collections import Collection
 from doculens.domain.conversations import Citation, Conversation, Message
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
+from doculens.domain.quotas import DailyUsage, DocumentUsageTotals, UsageEvent
 from doculens.domain.retrieval import ChunkMatch
 from doculens.domain.users import User
 from doculens.domain.vectors import SearchFilter
@@ -94,6 +95,11 @@ class DocumentRepository(Protocol):
         ...
 
     async def count_for_owner(self, owner_id: UUID) -> int: ...
+
+    async def usage_totals_for_owner(self, owner_id: UUID) -> DocumentUsageTotals:
+        """Live (non-deleted) document count, storage bytes and page total for quota checks."""
+        ...
+
     async def update(self, document: Document) -> None: ...
 
 
@@ -168,6 +174,15 @@ class MessageRepository(Protocol):
         ...
 
 
+class UsageRepository(Protocol):
+    """Idempotent daily usage ledger for questions and AI cost (§38, §39)."""
+
+    async def get(self, owner_id: UUID, idempotency_key: str) -> UsageEvent | None: ...
+    async def add(self, event: UsageEvent) -> None: ...
+    async def delete(self, owner_id: UUID, idempotency_key: str) -> bool: ...
+    async def daily_totals(self, owner_id: UUID, day: date) -> DailyUsage: ...
+
+
 class UnitOfWork(Protocol):
     @property
     def users(self) -> UserRepository: ...
@@ -183,6 +198,8 @@ class UnitOfWork(Protocol):
     def conversations(self) -> ConversationRepository: ...
     @property
     def messages(self) -> MessageRepository: ...
+    @property
+    def usage(self) -> UsageRepository: ...
 
     async def __aenter__(self) -> Self: ...
     async def __aexit__(

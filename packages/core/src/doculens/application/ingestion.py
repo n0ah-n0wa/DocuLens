@@ -37,6 +37,7 @@ from uuid import UUID
 from doculens.application.chunking import DocumentChunker
 from doculens.application.documents import clean_filename, ensure_collection_owned
 from doculens.application.embeddings import EmbeddingProvider
+from doculens.application.quotas import QuotaService
 from doculens.application.storage import ObjectStorage
 from doculens.application.tracing import set_span_attributes, start_span
 from doculens.application.unit_of_work import UnitOfWork, UnitOfWorkFactory
@@ -66,6 +67,7 @@ from doculens.domain.ingestion import (
     validate_upload,
 )
 from doculens.domain.jobs import JobPermanentlyFailedError
+from doculens.domain.quotas import PagesQuotaExceededError, embedding_cost_micros
 from doculens.domain.storage import (
     ObjectNotFoundError,
     content_hash,
@@ -107,12 +109,14 @@ class DocumentIntakeService:
         unit_of_work: UnitOfWorkFactory,
         storage: ObjectStorage,
         limits: UploadLimits,
+        quotas: QuotaService | None = None,
         jobs: DocumentJobSink | None = None,
         clock: Clock = utc_now,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._storage = storage
         self._limits = limits
+        self._quotas = quotas
         self._jobs = jobs
         self._clock = clock
 
@@ -137,7 +141,7 @@ class DocumentIntakeService:
         async with self._unit_of_work() as uow:
             if collection_id is not None:
                 await ensure_collection_owned(uow, owner_id, collection_id)
-            await self._check_limits(uow, owner_id, digest)
+            await self._check_limits(uow, owner_id, digest, file_size=len(data))
 
         now = self._clock()
         document_id = new_id()
@@ -163,7 +167,7 @@ class DocumentIntakeService:
                 # The lock serialises concurrent uploads by one user so the per-user limit and
                 # the duplicate rule hold under concurrency (the unique index is the backstop).
                 await uow.users.lock(owner_id)
-                await self._check_limits(uow, owner_id, digest)
+                await self._check_limits(uow, owner_id, digest, file_size=len(data))
                 await uow.documents.add(document)
                 await uow.commit()
         except BaseException:
@@ -183,10 +187,15 @@ class DocumentIntakeService:
         )
         return document
 
-    async def _check_limits(self, uow: UnitOfWork, owner_id: UUID, digest: str) -> None:
+    async def _check_limits(
+        self, uow: UnitOfWork, owner_id: UUID, digest: str, *, file_size: int
+    ) -> None:
         existing = await uow.documents.find_by_content_hash(owner_id, digest)
         if existing is not None:
             raise DuplicateDocumentError(existing.id)
+        if self._quotas is not None:
+            await self._quotas.check_upload(uow, owner_id, file_size=file_size)
+            return
         if await uow.documents.count_for_owner(owner_id) >= self._limits.max_documents_per_user:
             raise DocumentLimitReachedError
 
@@ -248,6 +257,7 @@ class DocumentProcessor:
         embeddings: EmbeddingProvider,
         vectors: VectorStore,
         limits: UploadLimits,
+        quotas: QuotaService | None = None,
         clock: Clock = utc_now,
         index_window: int = 128,
     ) -> None:
@@ -258,6 +268,7 @@ class DocumentProcessor:
         self._embeddings = embeddings
         self._vectors = vectors
         self._limits = limits
+        self._quotas = quotas
         self._clock = clock
         self._index_window = max(1, index_window)
 
@@ -368,6 +379,14 @@ class DocumentProcessor:
                 data, max_pages=self._limits.max_pages_per_document
             )
             self._ensure_page_limit(info.page_count)
+            if self._quotas is not None:
+                await self._quotas.ensure_pages_allowed(
+                    document.owner_id,
+                    additional_pages=info.page_count,
+                    replacing_pages=document.page_count or 0,
+                )
+        except PagesQuotaExceededError as error:
+            return await self._fail(document, error), None
         except PdfRejectedError as error:
             return await self._fail(document, error), None
         except (DependencyUnavailableError, _LostRaceError):
@@ -547,6 +566,16 @@ class DocumentProcessor:
             await self._vectors.upsert(document.owner_id, records)
             usage += result.usage
         await self._require_still_indexable(document)
+        if self._quotas is not None and usage.tokens:
+            cost = embedding_cost_micros(
+                model=self._embeddings.model, tokens=usage.tokens, pricing=self._quotas.pricing
+            )
+            await self._quotas.record_ai_cost(
+                document.owner_id,
+                idempotency_key=f"embed:{document.id}:{document.content_hash}",
+                cost_usd_micros=cost,
+                kind="embedding",
+            )
         return _Embedded(vector_ids, usage, embedded_now=len(pending))
 
     async def _require_still_indexable(self, document: Document) -> None:

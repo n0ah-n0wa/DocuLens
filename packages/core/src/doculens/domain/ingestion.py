@@ -21,6 +21,7 @@ from uuid import UUID
 
 from doculens.domain.documents import DocumentPage
 from doculens.domain.errors import ConflictError, DomainError, InvalidInputError
+from doculens.domain.quotas import DocumentQuotaExceededError
 
 PDF_MIME_TYPE = "application/pdf"
 PDF_EXTENSION = ".pdf"
@@ -63,9 +64,8 @@ class FileTooLargeError(UploadRejectedError):
     default_message = "The file exceeds the maximum allowed size."
 
 
-class DocumentLimitReachedError(InvalidInputError):
-    code = "DOCUMENT_LIMIT_REACHED"
-    default_message = "The maximum number of documents for this account has been reached."
+class DocumentLimitReachedError(DocumentQuotaExceededError):
+    """Raised at intake when ``QUOTA_MAX_DOCUMENTS`` / ``MAX_DOCUMENTS_PER_USER`` is spent."""
 
 
 class DuplicateDocumentError(ConflictError):

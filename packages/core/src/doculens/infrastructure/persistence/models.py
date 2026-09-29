@@ -19,13 +19,14 @@ Conventions
 - Constraint names follow ``NAMING_CONVENTION`` so migrations are deterministic.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     Enum,
     Float,
@@ -291,3 +292,30 @@ class CitationModel(Base):
     retrieval_score: Mapped[float] = mapped_column(Float)
     reranking_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     citation_order: Mapped[int] = mapped_column(Integer)
+
+
+class UsageEventModel(Base):
+    """Idempotent per-user usage ledger for daily question and AI-cost quotas (§38, §39)."""
+
+    __tablename__ = "usage_events"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "idempotency_key", name="uq_usage_events_owner_key"),
+        Index(None, "owner_id", "usage_day"),
+        CheckConstraint("questions >= 0", name="questions_non_negative"),
+        CheckConstraint("cost_usd_micros >= 0", name="cost_non_negative"),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 1 AND 128", name="idempotency_key_len"
+        ),
+        CheckConstraint("char_length(kind) BETWEEN 1 AND 32", name="kind_len"),
+    )
+
+    id: Mapped[UUID] = _uuid_pk()
+    owner_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    usage_day: Mapped[date] = mapped_column(Date, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    questions: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    cost_usd_micros: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    created_at: Mapped[datetime] = _created_at()

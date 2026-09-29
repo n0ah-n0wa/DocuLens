@@ -13,11 +13,17 @@ from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from doculens.application.observability import bind_correlation
-from doculens.application.ratelimit import enforce
+from doculens.application.ratelimit import (
+    RateLimiter,
+    enforce_keys,
+    user_and_ip_keys,
+    user_only_keys,
+)
 from doculens.domain.common import UNSET
 from doculens.domain.documents import MAX_FILENAME_LENGTH, Document, ProcessingStatus
 from doculens.domain.ingestion import EmptyUploadError, FileTooLargeError
 from doculens_api.dependencies import (
+    ClientAddressDep,
     CurrentUserDep,
     DocumentIntakeDep,
     DocumentServiceDep,
@@ -33,6 +39,7 @@ from doculens_api.errors import (
     RATE_LIMITED_RESPONSE,
     request_id_of,
 )
+from doculens_api.settings import ApiSettings
 
 router = APIRouter(
     prefix="/api/v1/documents",
@@ -52,6 +59,37 @@ UPLOAD_RESPONSES = {
     **PAYLOAD_TOO_LARGE_RESPONSE,
     **RATE_LIMITED_RESPONSE,
 }
+
+
+async def _throttle_upload(
+    limiter: RateLimiter, settings: ApiSettings, *, user_id: UUID, client: str
+) -> None:
+    """Upload bandwidth budget plus the shared document-processing / AI-ops budget (§37)."""
+    await enforce_keys(
+        limiter,
+        user_and_ip_keys("upload", user_id=user_id, client=client),
+        limit=settings.upload_rate_limit_attempts,
+        window_seconds=settings.upload_rate_limit_window_seconds,
+    )
+    await _throttle_processing(limiter, settings, user_id=user_id, client=client)
+
+
+async def _throttle_processing(
+    limiter: RateLimiter, settings: ApiSettings, *, user_id: UUID, client: str
+) -> None:
+    """Shared short-window (user+IP) and daily (user) budget for pipeline / embedding work."""
+    await enforce_keys(
+        limiter,
+        user_and_ip_keys("ai-ops", user_id=user_id, client=client),
+        limit=settings.ai_ops_rate_limit_attempts,
+        window_seconds=settings.ai_ops_rate_limit_window_seconds,
+    )
+    await enforce_keys(
+        limiter,
+        user_only_keys("ai-ops:daily", user_id=user_id),
+        limit=settings.ai_ops_daily_rate_limit_attempts,
+        window_seconds=settings.ai_ops_daily_rate_limit_window_seconds,
+    )
 
 
 class DocumentResponse(BaseModel):
@@ -127,18 +165,14 @@ async def upload_document(  # noqa: PLR0913, PLR0917 - FastAPI injects each coll
     intake: DocumentIntakeDep,
     settings: SettingsDep,
     limiter: RateLimiterDep,
+    client: ClientAddressDep,
     file: Annotated[UploadFile, File(description="PDF file to upload.")],
     collection_id: Annotated[
         UUID | None,
         Form(description="Optional collection that must belong to the caller."),
     ] = None,
 ) -> DocumentResponse:
-    await enforce(
-        limiter,
-        f"upload:user:{user.id}",
-        limit=settings.upload_rate_limit_attempts,
-        window_seconds=settings.upload_rate_limit_window_seconds,
-    )
+    await _throttle_upload(limiter, settings, user_id=user.id, client=client)
     max_bytes = settings.max_file_size_mb * MEBIBYTE
     content_length = request.headers.get("content-length")
     if content_length is not None:
@@ -237,26 +271,16 @@ async def delete_document(
     summary="Re-run the pipeline from the stored original",
     responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE, **RATE_LIMITED_RESPONSE},
 )
-async def reprocess_document(
+async def reprocess_document(  # noqa: PLR0913, PLR0917 - FastAPI injects each collaborator
     document_id: UUID,
     request: Request,
     user: CurrentUserDep,
     documents: DocumentServiceDep,
     settings: SettingsDep,
     limiter: RateLimiterDep,
+    client: ClientAddressDep,
 ) -> DocumentResponse:
-    await enforce(
-        limiter,
-        f"ai-ops:user:{user.id}",
-        limit=settings.ai_ops_rate_limit_attempts,
-        window_seconds=settings.ai_ops_rate_limit_window_seconds,
-    )
-    await enforce(
-        limiter,
-        f"ai-ops:daily:user:{user.id}",
-        limit=settings.ai_ops_daily_rate_limit_attempts,
-        window_seconds=settings.ai_ops_daily_rate_limit_window_seconds,
-    )
+    await _throttle_processing(limiter, settings, user_id=user.id, client=client)
     bind_correlation(document_id=document_id)
     return DocumentResponse.from_document(
         await documents.reprocess(user.id, document_id, request_id=request_id_of(request))
@@ -268,26 +292,16 @@ async def reprocess_document(
     summary="Re-chunk and re-embed from stored pages",
     responses={**NOT_FOUND_RESPONSE, **CONFLICT_RESPONSE, **RATE_LIMITED_RESPONSE},
 )
-async def reindex_document(
+async def reindex_document(  # noqa: PLR0913, PLR0917 - FastAPI injects each collaborator
     document_id: UUID,
     request: Request,
     user: CurrentUserDep,
     documents: DocumentServiceDep,
     settings: SettingsDep,
     limiter: RateLimiterDep,
+    client: ClientAddressDep,
 ) -> DocumentResponse:
-    await enforce(
-        limiter,
-        f"ai-ops:user:{user.id}",
-        limit=settings.ai_ops_rate_limit_attempts,
-        window_seconds=settings.ai_ops_rate_limit_window_seconds,
-    )
-    await enforce(
-        limiter,
-        f"ai-ops:daily:user:{user.id}",
-        limit=settings.ai_ops_daily_rate_limit_attempts,
-        window_seconds=settings.ai_ops_daily_rate_limit_window_seconds,
-    )
+    await _throttle_processing(limiter, settings, user_id=user.id, client=client)
     bind_correlation(document_id=document_id)
     return DocumentResponse.from_document(
         await documents.reindex(user.id, document_id, request_id=request_id_of(request))

@@ -12,7 +12,6 @@ a distributed attacker. Deployed environments require a shared Redis limiter
 (``RATE_LIMIT_BACKEND=redis``).
 """
 
-import hashlib
 from http import HTTPStatus
 from typing import Literal, Self
 
@@ -20,13 +19,13 @@ from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field, SecretStr
 
 from doculens.application.auth import TokenPair
-from doculens.application.ratelimit import RateLimiter, enforce
-from doculens.domain.auth import (
-    MAX_EMAIL_LENGTH,
-    MAX_PASSWORD_LENGTH,
-    InvalidEmailError,
-    normalize_email,
+from doculens.application.ratelimit import (
+    RateLimiter,
+    auth_account_key,
+    auth_address_key,
+    enforce_keys,
 )
+from doculens.domain.auth import MAX_EMAIL_LENGTH, MAX_PASSWORD_LENGTH
 from doculens_api.dependencies import AuthServiceDep, ClientAddressDep, RateLimiterDep, SettingsDep
 from doculens_api.errors import (
     BAD_REQUEST_RESPONSE,
@@ -90,22 +89,12 @@ class TokenPairResponse(BaseModel):
 
 
 async def _throttle(limiter: RateLimiter, settings: ApiSettings, *keys: str) -> None:
-    for key in keys:
-        await enforce(
-            limiter,
-            key,
-            limit=settings.auth_rate_limit_attempts,
-            window_seconds=settings.auth_rate_limit_window_seconds,
-        )
-
-
-def _account_key(email: str) -> str:
-    try:
-        normalized = normalize_email(email)
-    except InvalidEmailError:
-        normalized = email.strip().lower()
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    return f"auth:account:{digest}"
+    await enforce_keys(
+        limiter,
+        keys,
+        limit=settings.auth_rate_limit_attempts,
+        window_seconds=settings.auth_rate_limit_window_seconds,
+    )
 
 
 @router.post(
@@ -125,7 +114,7 @@ async def register(
     settings: SettingsDep,
     client: ClientAddressDep,
 ) -> UserResponse:
-    await _throttle(limiter, settings, f"auth:register:{client}")
+    await _throttle(limiter, settings, auth_address_key("register", client))
     user = await auth.register(body.email, body.password.get_secret_value())
     return UserResponse.from_user(user)
 
@@ -142,7 +131,12 @@ async def login(
     settings: SettingsDep,
     client: ClientAddressDep,
 ) -> TokenPairResponse:
-    await _throttle(limiter, settings, f"auth:login:{client}", _account_key(body.email))
+    await _throttle(
+        limiter,
+        settings,
+        auth_address_key("login", client),
+        auth_account_key(body.email),
+    )
     pair = await auth.login(body.email, body.password.get_secret_value())
     return TokenPairResponse.from_pair(pair)
 
@@ -159,7 +153,7 @@ async def refresh(
     settings: SettingsDep,
     client: ClientAddressDep,
 ) -> TokenPairResponse:
-    await _throttle(limiter, settings, f"auth:refresh:{client}")
+    await _throttle(limiter, settings, auth_address_key("refresh", client))
     pair = await auth.refresh(body.refresh_token)
     return TokenPairResponse.from_pair(pair)
 
@@ -183,6 +177,6 @@ async def logout(
     settings: SettingsDep,
     client: ClientAddressDep,
 ) -> Response:
-    await _throttle(limiter, settings, f"auth:logout:{client}")
+    await _throttle(limiter, settings, auth_address_key("logout", client))
     await auth.logout(body.refresh_token)
     return Response(status_code=HTTPStatus.NO_CONTENT)

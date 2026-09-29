@@ -26,6 +26,7 @@ EXPECTED_TABLES = {
     "conversations",
     "messages",
     "citations",
+    "usage_events",
 }
 
 

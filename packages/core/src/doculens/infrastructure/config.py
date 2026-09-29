@@ -8,6 +8,7 @@ development only, a ``.env`` file. Nothing in this module holds or defaults a se
 Interface packages extend :class:`CoreSettings` with the fields they own.
 """
 
+from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Self
@@ -219,7 +220,48 @@ class CoreSettings(BaseSettings):
         default=50, ge=1, le=5120, description="Largest accepted upload (§10.2)."
     )
     max_pages_per_document: int = Field(default=500, ge=1, le=100_000)
-    max_documents_per_user: int = Field(default=100, ge=1, le=1_000_000)
+    max_documents_per_user: int = Field(
+        default=100,
+        ge=1,
+        le=1_000_000,
+        description="Legacy alias; prefer QUOTA_MAX_DOCUMENTS (OQ-11).",
+    )
+    quota_max_documents: int = Field(
+        default=100,
+        ge=0,
+        le=1_000_000,
+        description="Live documents per user; 0 disables the ceiling (§39, OQ-11).",
+    )
+    quota_max_storage_mb: int = Field(
+        default=5 * 1024,
+        ge=0,
+        le=1_048_576,
+        description="Total stored bytes per user in MiB; 0 disables (§39).",
+    )
+    quota_max_pages_total: int = Field(
+        default=50_000,
+        ge=0,
+        le=100_000_000,
+        description="Sum of page_count across live documents; 0 disables (§39).",
+    )
+    quota_max_questions_per_day: int = Field(
+        default=500,
+        ge=0,
+        le=10_000_000,
+        description="Questions charged per UTC day; 0 disables (§39).",
+    )
+    quota_max_ai_cost_usd_per_day: Decimal = Field(
+        default=Decimal("10.00"),
+        ge=0,
+        description="Estimated AI spend ceiling in USD per UTC day; 0 disables (§38, §39).",
+    )
+    ai_pricing_json: str = Field(
+        default="",
+        description=(
+            "JSON map of model → {input_per_1m_usd, output_per_1m_usd, embed_per_1m_usd}; "
+            "optional key 'default' (§38, OQ-11)."
+        ),
+    )
     pdf_extraction_timeout_seconds: float = Field(
         default=120.0, gt=0, le=3600, description="Wall-clock bound for one parse (§53, §64)."
     )

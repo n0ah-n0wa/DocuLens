@@ -3,12 +3,14 @@
 The repositories mirror the ownership and referential rules of the SQLAlchemy adapters (owner
 filters on every read, detach-on-collection-delete, cascade-on-conversation-delete) so that use
 cases behave the same way under both. Writes apply immediately to the shared ``InMemoryStore`` (no
-transactional isolation); ``commits`` counts explicit commits.
+transactional isolation); ``commits`` counts explicit commits. Per-user ``lock`` uses an
+``asyncio.Lock`` so concurrent quota tests serialise the way PostgreSQL ``FOR UPDATE`` does.
 """
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
+from datetime import date, datetime
 from types import TracebackType
 from typing import Self
 from uuid import UUID
@@ -19,6 +21,7 @@ from doculens.domain.conversations import Citation, Conversation, Message
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
 from doculens.domain.errors import ConflictError, NotFoundError
 from doculens.domain.ingestion import DuplicateDocumentError
+from doculens.domain.quotas import DailyUsage, DocumentUsageTotals, UsageEvent
 from doculens.domain.retrieval import ChunkMatch, keyword_terms, words_of
 from doculens.domain.users import User
 from doculens.domain.vectors import SearchFilter
@@ -35,12 +38,15 @@ class InMemoryStore:
         self.conversations: dict[UUID, Conversation] = {}
         self.messages: dict[UUID, Message] = {}
         self.citations: dict[UUID, Citation] = {}
+        self.usage_events: dict[tuple[UUID, str], UsageEvent] = {}
         self.commits = 0
+        self._user_locks: dict[UUID, asyncio.Lock] = {}
 
 
 class InMemoryUserRepository:
     def __init__(self, store: InMemoryStore) -> None:
         self._store = store
+        self._held_locks: list[asyncio.Lock] = []
 
     async def add(self, user: User) -> None:
         if any(existing.email == user.email for existing in self._store.users.values()):
@@ -51,7 +57,13 @@ class InMemoryUserRepository:
         return self._store.users.get(user_id)
 
     async def lock(self, user_id: UUID) -> None:
-        del user_id  # the in-memory store has no concurrent writers
+        lock = self._store._user_locks.setdefault(user_id, asyncio.Lock())  # noqa: SLF001
+        await lock.acquire()
+        self._held_locks.append(lock)
+
+    def release_locks(self) -> None:
+        while self._held_locks:
+            self._held_locks.pop().release()
 
     async def get_by_email(self, email: str) -> User | None:
         return next((user for user in self._store.users.values() if user.email == email), None)
@@ -185,6 +197,14 @@ class InMemoryDocumentRepository:
 
     async def count_for_owner(self, owner_id: UUID) -> int:
         return len(await self.list_for_owner(owner_id))
+
+    async def usage_totals_for_owner(self, owner_id: UUID) -> DocumentUsageTotals:
+        owned = await self.list_for_owner(owner_id)
+        return DocumentUsageTotals(
+            documents=len(owned),
+            storage_bytes=sum(document.file_size for document in owned),
+            pages=sum(document.page_count or 0 for document in owned),
+        )
 
     async def update(self, document: Document) -> None:
         if await self.get(document.owner_id, document.id) is None:
@@ -361,6 +381,32 @@ class InMemoryMessageRepository:
         return grouped
 
 
+class InMemoryUsageRepository:
+    def __init__(self, store: InMemoryStore) -> None:
+        self._store = store
+
+    async def get(self, owner_id: UUID, idempotency_key: str) -> UsageEvent | None:
+        return self._store.usage_events.get((owner_id, idempotency_key))
+
+    async def add(self, event: UsageEvent) -> None:
+        key = (event.owner_id, event.idempotency_key)
+        if key in self._store.usage_events:
+            raise ConflictError
+        self._store.usage_events[key] = event
+
+    async def delete(self, owner_id: UUID, idempotency_key: str) -> bool:
+        return self._store.usage_events.pop((owner_id, idempotency_key), None) is not None
+
+    async def daily_totals(self, owner_id: UUID, day: date) -> DailyUsage:
+        questions = 0
+        cost = 0
+        for event in self._store.usage_events.values():
+            if event.owner_id == owner_id and event.usage_day == day:
+                questions += event.questions
+                cost += event.cost_usd_micros
+        return DailyUsage(day=day, questions=questions, cost_usd_micros=cost)
+
+
 class InMemoryUnitOfWork:
     def __init__(self, store: InMemoryStore) -> None:
         self._store = store
@@ -371,6 +417,7 @@ class InMemoryUnitOfWork:
         self.document_content = InMemoryDocumentContentRepository(store)
         self.conversations = InMemoryConversationRepository(store)
         self.messages = InMemoryMessageRepository(store)
+        self.usage = InMemoryUsageRepository(store)
 
     async def __aenter__(self) -> Self:
         return self
@@ -381,7 +428,7 @@ class InMemoryUnitOfWork:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        return None
+        self.users.release_locks()
 
     async def commit(self) -> None:
         self._store.commits += 1

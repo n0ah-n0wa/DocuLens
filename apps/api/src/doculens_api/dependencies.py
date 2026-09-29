@@ -20,7 +20,7 @@ from doculens.application.health import ReadinessService
 from doculens.application.ingestion import DocumentIntakeService
 from doculens.application.observability import bind_correlation
 from doculens.application.rag import RagService
-from doculens.application.ratelimit import RateLimiter
+from doculens.application.ratelimit import RateLimiter, normalize_client_address
 from doculens.application.storage import ObjectStorage, OwnerScopedObjectStorage
 from doculens.application.vectors import VectorStore
 from doculens.domain.errors import UnauthenticatedError
@@ -92,9 +92,13 @@ def get_rate_limiter(request: Request) -> RateLimiter:
 
 
 def client_address(request: Request) -> str:
-    """The peer address as seen by this process; proxy headers are trusted only once the
-    hosting decision (`OQ-19`) fixes which proxy sits in front."""
-    return request.client.host if request.client is not None else "unknown"
+    """The peer address as seen by this process.
+
+    ``X-Forwarded-For`` and friends are ignored until the hosting decision (`OQ-19`) fixes which
+    proxy sits in front — trusting them earlier would let callers bypass per-IP rate limits (§37).
+    """
+    peer = request.client.host if request.client is not None else None
+    return normalize_client_address(peer)
 
 
 async def get_current_user(

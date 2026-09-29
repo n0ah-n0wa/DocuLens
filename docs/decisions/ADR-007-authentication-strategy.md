@@ -50,10 +50,11 @@ tokens, which the API contract must not pre-empt.
 ## Consequences
 
 - New `refresh_tokens` table (migration `0002`), cascading with its user.
-- The rate limiter behind the auth endpoints is an in-process fixed-window store, exact per
-  instance; the Redis adapter (§37, §47) replaces the store behind the same port so limits become
-  fleet-wide. Client addresses are taken from the connection until `OQ-19` fixes the proxy whose
-  forwarding headers may be trusted.
+- The rate limiter behind the auth endpoints is a fixed-window store (in-process locally;
+  Redis when `RATE_LIMIT_BACKEND=redis` / deployed) behind a shared port so limits are
+  fleet-wide without changing handlers (§37, §47). Client addresses are taken from the
+  connection until `OQ-19` fixes the proxy whose forwarding headers may be trusted —
+  `X-Forwarded-For` is ignored today so it cannot bypass per-IP budgets.
 - Registration answers 409 for an existing email, as §33 requires. That reveals whether an
   address has an account; the per-address rate limit bounds how fast it can be probed, and the
   alternative (a neutral response plus email verification) depends on `OQ-24`.

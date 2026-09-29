@@ -16,6 +16,7 @@ from doculens.infrastructure.embeddings import build_embedding_provider
 from doculens.infrastructure.pdf import build_pdf_extractor, build_upload_limits
 from doculens.infrastructure.persistence.database import Database
 from doculens.infrastructure.queue import build_job_queue
+from doculens.infrastructure.quotas import build_quota_service
 from doculens.infrastructure.storage import build_object_storage
 from doculens.infrastructure.vectors import build_vector_store
 
@@ -50,6 +51,7 @@ def build_processor(  # noqa: PLR0913 - one optional override per port, for test
         embeddings=embeddings if embeddings is not None else build_embedding_provider(settings),
         vectors=vectors if vectors is not None else build_vector_store(settings),
         limits=build_upload_limits(settings),
+        quotas=build_quota_service(settings, unit_of_work=unit_of_work),
         index_window=settings.indexing_batch_chunks,
     )
 

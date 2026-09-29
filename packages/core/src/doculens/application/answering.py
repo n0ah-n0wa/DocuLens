@@ -40,6 +40,7 @@ from doculens.application.metrics import (
     emit_count,
     emit_latency_ms,
 )
+from doculens.application.quotas import QuotaService
 from doculens.application.retrieval import RetrievalResult, RetrievalService
 from doculens.application.tracing import set_span_attributes, start_span
 from doculens.application.unit_of_work import UnitOfWork, UnitOfWorkFactory
@@ -81,6 +82,7 @@ from doculens.domain.llm import (
     LLMUsage,
 )
 from doculens.domain.prompting import INSUFFICIENT_EVIDENCE_STATEMENT, GroundedPrompt, PromptBuilder
+from doculens.domain.quotas import embedding_cost_micros, llm_cost_micros
 from doculens.domain.time import utc_now
 
 logger = logging.getLogger(__name__)
@@ -207,6 +209,7 @@ class AnswerService:
         rewriter: QueryRewriter | None = None,
         options: GenerationOptions | None = None,
         limits: AnswerLimits | None = None,
+        quotas: QuotaService | None = None,
         clock: Clock = utc_now,
         id_factory: Callable[[], UUID] = new_id,
     ) -> None:
@@ -217,6 +220,7 @@ class AnswerService:
         self._rewriter = rewriter or NoQueryRewriting()
         self._options = options or GenerationOptions()
         self._limits = limits or AnswerLimits()
+        self._quotas = quotas
         self._clock = clock
         self._new_id = id_factory
 
@@ -228,6 +232,7 @@ class AnswerService:
         conversation_id: UUID | None = None,
         document_ids: Sequence[UUID] | None = None,
         collection_id: UUID | None = None,
+        idempotency_key: str | None = None,
     ) -> AnswerResult:
         """Answer ``question`` from the owner's documents inside a conversation.
 
@@ -248,6 +253,7 @@ class AnswerService:
                 conversation_id=conversation_id,
                 document_ids=document_ids,
                 collection_id=collection_id,
+                idempotency_key=idempotency_key,
             )
             set_span_attributes(
                 root,
@@ -260,6 +266,66 @@ class AnswerService:
             return result
 
     async def _answer(
+        self,
+        owner_id: UUID,
+        question: str,
+        *,
+        conversation_id: UUID | None = None,
+        document_ids: Sequence[UUID] | None = None,
+        collection_id: UUID | None = None,
+        idempotency_key: str | None = None,
+    ) -> AnswerResult:
+        key = idempotency_key or f"question:{self._new_id()}"
+        reserved = await self._reserve_question(owner_id, key)
+        try:
+            result = await self._answer_pipeline(
+                owner_id,
+                question,
+                conversation_id=conversation_id,
+                document_ids=document_ids,
+                collection_id=collection_id,
+            )
+        except Exception:
+            if reserved:
+                await self._release_question(owner_id, key)
+            raise
+        await self._record_answer_cost(owner_id, key, result)
+        return result
+
+    async def _reserve_question(self, owner_id: UUID, key: str) -> bool:
+        if self._quotas is None:
+            return False
+        return await self._quotas.reserve_question(owner_id, idempotency_key=key)
+
+    async def _release_question(self, owner_id: UUID, key: str) -> None:
+        if self._quotas is None:
+            return
+        await self._quotas.release_question(owner_id, idempotency_key=key)
+
+    async def _record_answer_cost(self, owner_id: UUID, key: str, result: AnswerResult) -> None:
+        if self._quotas is None:
+            return
+        generation = result.usage.generation
+        rewrite = result.usage.rewriting
+        micros = llm_cost_micros(
+            model=result.retrieval.model or self._llm.model,
+            input_tokens=(generation.input_tokens or 0) + (rewrite.input_tokens or 0),
+            output_tokens=(generation.output_tokens or 0) + (rewrite.output_tokens or 0),
+            pricing=self._quotas.pricing,
+        )
+        micros += embedding_cost_micros(
+            model=None, tokens=result.usage.embeddings.tokens, pricing=self._quotas.pricing
+        )
+        if micros <= 0:
+            return
+        await self._quotas.record_ai_cost(
+            owner_id,
+            idempotency_key=f"ai:{key}",
+            cost_usd_micros=micros,
+            kind="answer",
+        )
+
+    async def _answer_pipeline(
         self,
         owner_id: UUID,
         question: str,
@@ -407,6 +473,7 @@ class AnswerService:
         conversation_id: UUID | None = None,
         document_ids: Sequence[UUID] | None = None,
         collection_id: UUID | None = None,
+        idempotency_key: str | None = None,
     ) -> AsyncIterator[AnswerToken | AnswerResult]:
         """Stream progressive answer text, then the persisted ``AnswerResult`` (§44).
 
@@ -427,6 +494,7 @@ class AnswerService:
                 conversation_id=conversation_id,
                 document_ids=document_ids,
                 collection_id=collection_id,
+                idempotency_key=idempotency_key,
             ):
                 if isinstance(part, AnswerResult):
                     set_span_attributes(
@@ -440,7 +508,35 @@ class AnswerService:
                     )
                 yield part
 
-    async def _answer_stream(  # noqa: PLR0915 - mirrors _answer(); streaming adds token yields
+    async def _answer_stream(
+        self,
+        owner_id: UUID,
+        question: str,
+        *,
+        conversation_id: UUID | None = None,
+        document_ids: Sequence[UUID] | None = None,
+        collection_id: UUID | None = None,
+        idempotency_key: str | None = None,
+    ) -> AsyncIterator[AnswerToken | AnswerResult]:
+        key = idempotency_key or f"question:{self._new_id()}"
+        reserved = await self._reserve_question(owner_id, key)
+        try:
+            async for part in self._stream_body(
+                owner_id,
+                question,
+                conversation_id=conversation_id,
+                document_ids=document_ids,
+                collection_id=collection_id,
+            ):
+                if isinstance(part, AnswerResult):
+                    await self._record_answer_cost(owner_id, key, part)
+                yield part
+        except Exception:
+            if reserved:
+                await self._release_question(owner_id, key)
+            raise
+
+    async def _stream_body(  # noqa: PLR0915 - mirrors _answer_pipeline with token yields
         self,
         owner_id: UUID,
         question: str,

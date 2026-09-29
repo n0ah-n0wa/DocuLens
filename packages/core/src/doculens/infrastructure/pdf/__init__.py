@@ -8,10 +8,13 @@ MEBIBYTE = 1024 * 1024
 
 
 def build_upload_limits(settings: CoreSettings) -> UploadLimits:
+    documents = settings.quota_max_documents
+    if documents <= 0:
+        documents = settings.max_documents_per_user
     return UploadLimits(
         max_file_size_bytes=settings.max_file_size_mb * MEBIBYTE,
         max_pages_per_document=settings.max_pages_per_document,
-        max_documents_per_user=settings.max_documents_per_user,
+        max_documents_per_user=documents,
     )
 
 

@@ -67,21 +67,33 @@ class ApiSettings(CoreSettings):
     )
     password_min_length: int = Field(default=12, ge=8, le=128)
     auth_rate_limit_attempts: int = Field(
-        default=10, ge=1, le=1000, description="Auth requests allowed per key per window (§37)."
+        default=10,
+        ge=1,
+        le=1000,
+        description=(
+            "Auth requests allowed per client address (and per hashed account on login) "
+            "per window (§37)."
+        ),
     )
     auth_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
     upload_rate_limit_attempts: int = Field(
         default=30,
         ge=1,
         le=10_000,
-        description="Document uploads allowed per authenticated user per window (§37).",
+        description=(
+            "Document uploads allowed per authenticated user and per client address "
+            "per short window (§37)."
+        ),
     )
     upload_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
     ask_rate_limit_attempts: int = Field(
         default=30,
         ge=1,
         le=10_000,
-        description="Questions allowed per authenticated user per short window (§37).",
+        description=(
+            "Questions allowed per authenticated user and per client address "
+            "per short window (§37); sync and stream share this budget."
+        ),
     )
     ask_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
     ask_daily_rate_limit_attempts: int = Field(
@@ -90,7 +102,7 @@ class ApiSettings(CoreSettings):
         le=1_000_000,
         description=(
             "Questions allowed per authenticated user per day (§37, §39). "
-            "Bounds AI spend beyond the short-window burst limit."
+            "Bounds AI spend beyond the short-window burst limit (user-only, not IP)."
         ),
     )
     ask_daily_rate_limit_window_seconds: int = Field(
@@ -104,7 +116,8 @@ class ApiSettings(CoreSettings):
         ge=1,
         le=10_000,
         description=(
-            "Document reprocess/reindex attempts per authenticated user per short window (§37)."
+            "Document processing budget (upload enqueue, reprocess, reindex) per user and "
+            "per client address per short window (§37)."
         ),
     )
     ai_ops_rate_limit_window_seconds: int = Field(default=60, ge=1, le=3600)
@@ -113,14 +126,15 @@ class ApiSettings(CoreSettings):
         ge=1,
         le=1_000_000,
         description=(
-            "Document reprocess/reindex attempts per authenticated user per day (§37, §39)."
+            "Document processing budget per authenticated user per day (§37, §39); "
+            "upload, reprocess and reindex share this spend cap."
         ),
     )
     ai_ops_daily_rate_limit_window_seconds: int = Field(
         default=86_400,
         ge=60,
         le=604_800,
-        description="Daily AI-ops quota window in seconds (default 24h).",
+        description="Daily AI-ops / processing quota window in seconds (default 24h).",
     )
     cors_origins: str = Field(
         default="",

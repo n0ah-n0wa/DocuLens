@@ -33,6 +33,7 @@ from doculens.infrastructure.logging import configure_logging
 from doculens.infrastructure.pdf import build_upload_limits
 from doculens.infrastructure.persistence.database import Database, DatabaseProbe
 from doculens.infrastructure.queue import JobQueueProbe, build_job_queue
+from doculens.infrastructure.quotas import build_quota_service
 from doculens.infrastructure.rag import build_rag_service
 from doculens.infrastructure.ratelimit import build_rate_limiter
 from doculens.infrastructure.security.passwords import Argon2PasswordHasher
@@ -142,6 +143,7 @@ def create_app(
             unit_of_work=unit_of_work,
             storage=object_storage,
             limits=build_upload_limits(resolved),
+            quotas=build_quota_service(resolved, unit_of_work=unit_of_work),
             jobs=jobs,
         ),
         conversations=ConversationService(unit_of_work=unit_of_work),
@@ -151,6 +153,7 @@ def create_app(
             embeddings=embedding_provider,
             vectors=vector_store,
             llm=llm_provider,
+            quotas=build_quota_service(resolved, unit_of_work=unit_of_work),
         ),
         rate_limiter=rate_limiter if rate_limiter is not None else build_rate_limiter(resolved),
         object_storage=object_storage,

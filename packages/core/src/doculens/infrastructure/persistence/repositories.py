@@ -6,7 +6,7 @@ so callers only ever handle domain entities.
 """
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -23,6 +23,7 @@ from doculens.domain.conversations import Citation, Conversation, Message
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
 from doculens.domain.errors import ConflictError, NotFoundError
 from doculens.domain.ingestion import DuplicateDocumentError
+from doculens.domain.quotas import DailyUsage, DocumentUsageTotals, UsageEvent
 from doculens.domain.retrieval import ChunkMatch, keyword_terms
 from doculens.domain.users import User
 from doculens.domain.vectors import SearchFilter
@@ -36,6 +37,7 @@ from doculens.infrastructure.persistence.models import (
     DocumentPageModel,
     MessageModel,
     RefreshTokenModel,
+    UsageEventModel,
     UserModel,
 )
 
@@ -267,6 +269,23 @@ class SqlAlchemyDocumentRepository:
             .where(DocumentModel.owner_id == owner_id, _LIVE_DOCUMENT)
         )
         return int(count or 0)
+
+    async def usage_totals_for_owner(self, owner_id: UUID) -> DocumentUsageTotals:
+        row = await self._session.execute(
+            select(
+                func.count(),
+                func.coalesce(func.sum(DocumentModel.file_size), 0),
+                func.coalesce(func.sum(func.coalesce(DocumentModel.page_count, 0)), 0),
+            )
+            .select_from(DocumentModel)
+            .where(DocumentModel.owner_id == owner_id, _LIVE_DOCUMENT)
+        )
+        documents, storage, pages = row.one()
+        return DocumentUsageTotals(
+            documents=int(documents or 0),
+            storage_bytes=int(storage or 0),
+            pages=int(pages or 0),
+        )
 
     async def update(self, document: Document) -> None:
         row = await self._owned(document.owner_id, document.id)
@@ -522,3 +541,65 @@ class SqlAlchemyMessageRepository:
             )
         )
         return rows.first() is not None
+
+
+class SqlAlchemyUsageRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, owner_id: UUID, idempotency_key: str) -> UsageEvent | None:
+        row = await self._session.scalar(
+            select(UsageEventModel).where(
+                UsageEventModel.owner_id == owner_id,
+                UsageEventModel.idempotency_key == idempotency_key,
+            )
+        )
+        return _usage_to_domain(row) if row is not None else None
+
+    async def add(self, event: UsageEvent) -> None:
+        self._session.add(
+            UsageEventModel(
+                id=event.id,
+                owner_id=event.owner_id,
+                idempotency_key=event.idempotency_key,
+                usage_day=event.usage_day,
+                kind=event.kind,
+                questions=event.questions,
+                cost_usd_micros=event.cost_usd_micros,
+                created_at=event.created_at,
+            )
+        )
+        await self._session.flush()
+
+    async def delete(self, owner_id: UUID, idempotency_key: str) -> bool:
+        result = await self._session.execute(
+            delete(UsageEventModel).where(
+                UsageEventModel.owner_id == owner_id,
+                UsageEventModel.idempotency_key == idempotency_key,
+            )
+        )
+        await self._session.flush()
+        return int(cast("CursorResult[Any]", result).rowcount or 0) > 0
+
+    async def daily_totals(self, owner_id: UUID, day: date) -> DailyUsage:
+        row = await self._session.execute(
+            select(
+                func.coalesce(func.sum(UsageEventModel.questions), 0),
+                func.coalesce(func.sum(UsageEventModel.cost_usd_micros), 0),
+            ).where(UsageEventModel.owner_id == owner_id, UsageEventModel.usage_day == day)
+        )
+        questions, cost = row.one()
+        return DailyUsage(day=day, questions=int(questions or 0), cost_usd_micros=int(cost or 0))
+
+
+def _usage_to_domain(row: UsageEventModel) -> UsageEvent:
+    return UsageEvent(
+        id=row.id,
+        owner_id=row.owner_id,
+        idempotency_key=row.idempotency_key,
+        usage_day=row.usage_day,
+        kind=row.kind,
+        questions=row.questions,
+        cost_usd_micros=int(row.cost_usd_micros),
+        created_at=row.created_at,
+    )

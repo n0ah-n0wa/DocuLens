@@ -23,7 +23,12 @@ from starlette.requests import Request
 from doculens.application.conversations import MessageWithCitations
 from doculens.application.observability import correlation_context
 from doculens.application.rag import RagQuery
-from doculens.application.ratelimit import enforce
+from doculens.application.ratelimit import (
+    RateLimiter,
+    enforce_keys,
+    user_and_ip_keys,
+    user_only_keys,
+)
 from doculens.domain.answering import AnswerOutcome, AnswerResult, AnswerToken
 from doculens.domain.common import UNSET
 from doculens.domain.conversations import (
@@ -35,6 +40,7 @@ from doculens.domain.conversations import (
 )
 from doculens.domain.errors import DomainError
 from doculens_api.dependencies import (
+    ClientAddressDep,
     ConversationServiceDep,
     CurrentUserDep,
     RagServiceDep,
@@ -49,6 +55,7 @@ from doculens_api.errors import (
     ErrorResponse,
     request_id_of,
 )
+from doculens_api.settings import ApiSettings
 
 logger = structlog.get_logger(__name__)
 
@@ -136,6 +143,24 @@ class AskRequest(BaseModel):
         ),
     )
     document_ids: list[UUID] | None = Field(default=None, min_length=1, max_length=100)
+
+
+async def _throttle_ask(
+    limiter: RateLimiter, settings: ApiSettings, *, user_id: UUID, client: str
+) -> None:
+    """Short-window user+IP burst and daily per-user spend cap for question generation (§37)."""
+    await enforce_keys(
+        limiter,
+        user_and_ip_keys("ask", user_id=user_id, client=client),
+        limit=settings.ask_rate_limit_attempts,
+        window_seconds=settings.ask_rate_limit_window_seconds,
+    )
+    await enforce_keys(
+        limiter,
+        user_only_keys("ask:daily", user_id=user_id),
+        limit=settings.ask_daily_rate_limit_attempts,
+        window_seconds=settings.ask_daily_rate_limit_window_seconds,
+    )
 
 
 class RetrievalMetadataResponse(BaseModel):
@@ -312,26 +337,16 @@ async def delete_conversation(
         },
     },
 )
-async def ask_question(
+async def ask_question(  # noqa: PLR0913, PLR0917 - FastAPI injects each collaborator
     conversation_id: UUID,
     body: AskRequest,
     user: CurrentUserDep,
     rag: RagServiceDep,
     limiter: RateLimiterDep,
     settings: SettingsDep,
+    client: ClientAddressDep,
 ) -> AnswerResponse:
-    await enforce(
-        limiter,
-        f"ask:user:{user.id}",
-        limit=settings.ask_rate_limit_attempts,
-        window_seconds=settings.ask_rate_limit_window_seconds,
-    )
-    await enforce(
-        limiter,
-        f"ask:daily:user:{user.id}",
-        limit=settings.ask_daily_rate_limit_attempts,
-        window_seconds=settings.ask_daily_rate_limit_window_seconds,
-    )
+    await _throttle_ask(limiter, settings, user_id=user.id, client=client)
     with correlation_context(conversation_id=conversation_id):
         result = await rag.answer(
             RagQuery(owner_id=user.id, question=body.question, document_ids=body.document_ids),
@@ -373,24 +388,14 @@ async def ask_question_stream(  # noqa: PLR0913, PLR0917 - FastAPI injects each 
     rag: RagServiceDep,
     limiter: RateLimiterDep,
     settings: SettingsDep,
+    client: ClientAddressDep,
 ) -> StreamingResponse:
     """Server-Sent Events: ``delta`` tokens, then ``final`` with the persisted answer.
 
     On mid-stream failure an ``error`` event is sent and nothing is persisted. Client abort
     cancels generation without writing messages (ADR-018 / OQ-18 provisional).
     """
-    await enforce(
-        limiter,
-        f"ask:user:{user.id}",
-        limit=settings.ask_rate_limit_attempts,
-        window_seconds=settings.ask_rate_limit_window_seconds,
-    )
-    await enforce(
-        limiter,
-        f"ask:daily:user:{user.id}",
-        limit=settings.ask_daily_rate_limit_attempts,
-        window_seconds=settings.ask_daily_rate_limit_window_seconds,
-    )
+    await _throttle_ask(limiter, settings, user_id=user.id, client=client)
     request_id = request_id_of(request)
 
     async def events() -> AsyncIterator[str]:

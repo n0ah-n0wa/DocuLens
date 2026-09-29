@@ -9,6 +9,7 @@ from doculens.application.answering import (
 )
 from doculens.application.embeddings import EmbeddingProvider
 from doculens.application.llm import LLMProvider
+from doculens.application.quotas import QuotaService
 from doculens.application.rag import RagService
 from doculens.application.retrieval import RetrievalService, Retriever, build_retriever
 from doculens.application.unit_of_work import UnitOfWorkFactory
@@ -19,6 +20,7 @@ from doculens.domain.retrieval import ContextLimits, RetrievalLimits
 from doculens.infrastructure.config import CoreSettings
 from doculens.infrastructure.embeddings import build_embedding_provider
 from doculens.infrastructure.llm import build_llm_provider
+from doculens.infrastructure.quotas import build_quota_service
 from doculens.infrastructure.reranking import build_reranking_stage
 from doculens.infrastructure.vectors import build_vector_store
 
@@ -97,7 +99,7 @@ def build_query_rewriter(settings: CoreSettings, llm: LLMProvider) -> QueryRewri
     )
 
 
-def build_answer_service(
+def build_answer_service(  # noqa: PLR0913 - optional overrides for each RAG collaborator
     settings: CoreSettings,
     *,
     unit_of_work: UnitOfWorkFactory,
@@ -105,6 +107,7 @@ def build_answer_service(
     llm: LLMProvider | None = None,
     embeddings: EmbeddingProvider | None = None,
     vectors: VectorStore | None = None,
+    quotas: QuotaService | None = None,
 ) -> AnswerService:
     model = llm or build_llm_provider(settings)
     return AnswerService(
@@ -126,6 +129,11 @@ def build_answer_service(
             max_history_characters=settings.prompt_max_history_characters,
             generation_timeout_seconds=settings.generation_timeout_seconds,
         ),
+        quotas=(
+            quotas
+            if quotas is not None
+            else build_quota_service(settings, unit_of_work=unit_of_work)
+        ),
     )
 
 
@@ -136,6 +144,7 @@ def build_rag_service(
     embeddings: EmbeddingProvider | None = None,
     vectors: VectorStore | None = None,
     llm: LLMProvider | None = None,
+    quotas: QuotaService | None = None,
 ) -> RagService:
     retrieval = build_retrieval_service(
         settings, unit_of_work=unit_of_work, embeddings=embeddings, vectors=vectors
@@ -143,7 +152,11 @@ def build_rag_service(
     return RagService(
         retrieval=retrieval,
         answering=build_answer_service(
-            settings, unit_of_work=unit_of_work, retrieval=retrieval, llm=llm
+            settings,
+            unit_of_work=unit_of_work,
+            retrieval=retrieval,
+            llm=llm,
+            quotas=quotas,
         ),
     )
 

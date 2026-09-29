@@ -18,6 +18,7 @@ from doculens.infrastructure.persistence.repositories import (
     SqlAlchemyDocumentRepository,
     SqlAlchemyMessageRepository,
     SqlAlchemyRefreshTokenRepository,
+    SqlAlchemyUsageRepository,
     SqlAlchemyUserRepository,
 )
 
@@ -36,6 +37,7 @@ class SqlAlchemyUnitOfWork:
     document_content: SqlAlchemyDocumentContentRepository
     conversations: SqlAlchemyConversationRepository
     messages: SqlAlchemyMessageRepository
+    usage: SqlAlchemyUsageRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -58,6 +60,7 @@ class SqlAlchemyUnitOfWork:
         self.document_content = SqlAlchemyDocumentContentRepository(session)
         self.conversations = SqlAlchemyConversationRepository(session)
         self.messages = SqlAlchemyMessageRepository(session)
+        self.usage = SqlAlchemyUsageRepository(session)
         return self
 
     async def __aexit__(
