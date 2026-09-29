@@ -38,6 +38,7 @@ from doculens.infrastructure.ratelimit import build_rate_limiter
 from doculens.infrastructure.security.passwords import Argon2PasswordHasher
 from doculens.infrastructure.security.tokens import JwtTokenCodec
 from doculens.infrastructure.storage import ObjectStorageProbe, build_object_storage
+from doculens.infrastructure.telemetry import configure_tracing, shutdown_tracing
 from doculens.infrastructure.vectors import ChromaVectorStore, VectorStoreProbe, build_vector_store
 from doculens_api import SERVICE_NAME, __version__
 from doculens_api.dependencies import AppComponents
@@ -46,6 +47,7 @@ from doculens_api.middleware.request_context import RequestContextMiddleware
 from doculens_api.middleware.security_headers import SecurityHeadersMiddleware
 from doculens_api.routers import auth, collections, conversations, documents, health, users
 from doculens_api.settings import ApiSettings
+from doculens_api.telemetry import instrument_fastapi
 
 # Browser clients only need these methods; wildcards widen the CSRF/CORS surface.
 _CORS_ALLOW_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
@@ -90,6 +92,7 @@ def create_app(
         level=resolved.log_level,
         log_format=resolved.log_format,
     )
+    configure_tracing(service_name=SERVICE_NAME, settings=resolved, service_version=__version__)
     database = Database(resolved)
     object_storage = build_object_storage(resolved)
     vector_store = build_vector_store(resolved)
@@ -167,6 +170,7 @@ def create_app(
             yield
         finally:
             await database.dispose()
+            shutdown_tracing()
             logger.info("application stopped", operation="app.stop")
 
     app = FastAPI(
@@ -209,4 +213,5 @@ def create_app(
             allow_headers=[*_CORS_ALLOW_HEADERS, resolved.request_id_header],
             expose_headers=[resolved.request_id_header],
         )
+    instrument_fastapi(app)
     return app

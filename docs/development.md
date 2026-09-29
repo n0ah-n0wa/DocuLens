@@ -80,6 +80,46 @@ so nothing beyond a checkout is needed. To exercise the S3 adapter locally, star
 and set `STORAGE_BACKEND=s3` with the MinIO values from `.env.example` (`make infra-up` creates the
 bucket). Staging and production accept only `s3` with server-side encryption and role credentials.
 
+### Telemetry (logs, metrics, traces)
+
+**Logs** are always on (`LOG_FORMAT=console` locally, `json` when deployed). Correlation fields
+(`request_id`, `user_id`, `document_id`, `conversation_id`, `job_id`) are bound into the logging
+context; a redaction processor strips secrets and document/prompt fields (§50, §68).
+
+**Metrics** are emitted as CloudWatch Embedded Metric Format lines on the same log stream (OQ-21).
+No Prometheus scrape endpoint.
+
+**Traces** use OpenTelemetry (§52). Configuration (also in `.env.example`):
+
+| Setting                       | Local                                                             | Staging / production                                                                   |
+| ----------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `OTEL_TRACES_EXPORTER`        | `none` (default) or `console` to print spans                      | `otlp` (or `none` to disable); `console` is rejected                                   |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | e.g. `http://127.0.0.1:4318` when using a local collector         | Collector / ADOT base URL or full `/v1/traces` path (required when exporter is `otlp`) |
+| `OTEL_SERVICE_NAME`           | optional override (`doculens-api` / `doculens-worker` by default) | same                                                                                   |
+| `OTEL_TRACES_SAMPLER_RATIO`   | `1.0` for full sampling while debugging                           | often `< 1.0` under load                                                               |
+
+Local console traces:
+
+```bash
+# .env
+OTEL_TRACES_EXPORTER=console
+uv run uvicorn doculens_api.main:create_app --factory --reload --port 8000
+```
+
+Local OTLP (Jaeger all-in-one example):
+
+```bash
+docker run --rm -p 4318:4318 -p 16686:16686 jaegertracing/all-in-one:1.57
+# .env
+OTEL_TRACES_EXPORTER=otlp
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+```
+
+Production (OQ-21 provisional): set `OTEL_TRACES_EXPORTER=otlp` and point
+`OTEL_EXPORTER_OTLP_ENDPOINT` at the ADOT sidecar/collector (or rely on the ADOT Lambda layer’s
+already-installed `TracerProvider` — `configure_tracing` is a no-op when one is present). Spans
+never include passwords, tokens, API keys, prompts, answers, or document text.
+
 Integration tests (`packages/core/tests/integration`, marker `integration`) start disposable
 PostgreSQL, MinIO and ChromaDB containers through testcontainers; set `DOCULENS_TEST_DATABASE_URL`,
 `DOCULENS_TEST_S3_ENDPOINT_URL` or `DOCULENS_TEST_CHROMA_URL` to reuse running ones (the compose

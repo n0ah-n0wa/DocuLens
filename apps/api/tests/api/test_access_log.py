@@ -31,6 +31,14 @@ def test_each_request_emits_one_structured_access_log_entry(
     assert entry["environment"] == "local"
     assert isinstance(entry["duration_ms"], float)
 
+    metrics = [entry for entry in entries if entry.get("metric") is True]
+    names = {entry.get("metric_name") for entry in metrics}
+    assert "HttpRequests" in names
+    assert "HttpRequestDuration" in names
+    http_count = next(entry for entry in metrics if entry.get("metric_name") == "HttpRequests")
+    assert http_count["method"] == "GET"
+    assert http_count["status_class"] == "2xx"
+
 
 def test_the_logging_context_does_not_leak_between_requests(
     capsys: pytest.CaptureFixture[str], settings: ApiSettings
@@ -41,6 +49,7 @@ def test_the_logging_context_does_not_leak_between_requests(
         client.get("/health/live")
 
     entries = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
-    request_ids = [entry["request_id"] for entry in entries if "request_id" in entry]
-    assert request_ids[0] == "first"
-    assert request_ids[1] != "first"
+    access = [entry for entry in entries if entry.get("operation") == "http.request"]
+    assert len(access) == 2
+    assert access[0]["request_id"] == "first"
+    assert access[1]["request_id"] != "first"

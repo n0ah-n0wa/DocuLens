@@ -34,6 +34,7 @@ def _job_payload(job: ProcessingJob) -> dict[str, Any]:
         "attempt": job.attempt,
         "enqueued_at": job.enqueued_at.astimezone(UTC).isoformat(),
         "request_id": job.request_id,
+        "traceparent": job.traceparent,
     }
 
 
@@ -44,6 +45,7 @@ def _job_from_payload(payload: dict[str, Any]) -> ProcessingJob:
         attempt=int(payload["attempt"]),
         enqueued_at=datetime.fromisoformat(str(payload["enqueued_at"])),
         request_id=str(payload["request_id"]) if payload.get("request_id") else None,
+        traceparent=str(payload["traceparent"]) if payload.get("traceparent") else None,
     )
 
 
@@ -118,6 +120,7 @@ class SqsJobQueue:
                 attempt=receive_count,
                 enqueued_at=job.enqueued_at,
                 request_id=job.request_id,
+                traceparent=job.traceparent,
             )
         return ClaimedJob(receipt=receipt, job=job, available_at=utc_now())
 

@@ -13,6 +13,8 @@ import time
 from collections.abc import Sequence
 from typing import Protocol
 
+from doculens.application.metrics import NAMESPACE_RAG, emit_count, emit_latency_ms
+from doculens.application.tracing import set_span_attributes, start_span
 from doculens.domain.errors import DependencyUnavailableError
 from doculens.domain.reranking import (
     RerankerError,
@@ -69,6 +71,46 @@ class RerankingStage:
             return (), RerankingReport(
                 status=RerankingStatus.SKIPPED, provider=provider.name, model=provider.model
             )
+        with start_span(
+            "retrieval.rerank",
+            attributes={
+                "reranker.provider": provider.name,
+                "reranker.model": provider.model,
+                "candidates": len(evidence),
+            },
+        ) as span:
+            evidence_out, report = await self._rerank(query, evidence, provider)
+            set_span_attributes(span, {"reranking.status": report.status.value})
+            dims = {
+                "status": report.status.value,
+                "provider": provider.name,
+                "model": provider.model,
+            }
+            emit_count("RagReranks", namespace=NAMESPACE_RAG, dimensions=dims)
+            emit_latency_ms(
+                "RagRerankLatency",
+                float(report.latency_ms),
+                namespace=NAMESPACE_RAG,
+                dimensions=dims,
+            )
+            if report.status is RerankingStatus.DEGRADED:
+                emit_count(
+                    "RagRerankDegraded",
+                    namespace=NAMESPACE_RAG,
+                    dimensions={
+                        "provider": provider.name,
+                        "model": provider.model,
+                        "error_code": report.error_code or "UNKNOWN",
+                    },
+                )
+            return evidence_out, report
+
+    async def _rerank(
+        self,
+        query: PreparedQuery,
+        evidence: Sequence[Evidence],
+        provider: RerankerProvider,
+    ) -> tuple[tuple[Evidence, ...], RerankingReport]:
         started = time.perf_counter()
         try:
             async with asyncio.timeout(self._limits.timeout_seconds):

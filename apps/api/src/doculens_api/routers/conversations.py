@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from starlette.requests import Request
 
 from doculens.application.conversations import MessageWithCitations
+from doculens.application.observability import correlation_context
 from doculens.application.rag import RagQuery
 from doculens.application.ratelimit import enforce
 from doculens.domain.answering import AnswerOutcome, AnswerResult, AnswerToken
@@ -331,10 +332,11 @@ async def ask_question(
         limit=settings.ask_daily_rate_limit_attempts,
         window_seconds=settings.ask_daily_rate_limit_window_seconds,
     )
-    result = await rag.answer(
-        RagQuery(owner_id=user.id, question=body.question, document_ids=body.document_ids),
-        conversation_id=conversation_id,
-    )
+    with correlation_context(conversation_id=conversation_id):
+        result = await rag.answer(
+            RagQuery(owner_id=user.id, question=body.question, document_ids=body.document_ids),
+            conversation_id=conversation_id,
+        )
     return AnswerResponse.from_result(result)
 
 
@@ -393,21 +395,24 @@ async def ask_question_stream(  # noqa: PLR0913, PLR0917 - FastAPI injects each 
 
     async def events() -> AsyncIterator[str]:
         try:
-            stream = rag.answer_stream(
-                RagQuery(owner_id=user.id, question=body.question, document_ids=body.document_ids),
-                conversation_id=conversation_id,
-            )
-            async for part in stream:
-                if await request.is_disconnected():
-                    closer = getattr(stream, "aclose", None)
-                    if closer is not None:
-                        await closer()
-                    return
-                if isinstance(part, AnswerToken):
-                    yield _sse({"type": "delta", "text": part.text})
-                else:
-                    payload = AnswerResponse.from_result(part).model_dump(mode="json")
-                    yield _sse({"type": "final", "answer": payload})
+            with correlation_context(conversation_id=conversation_id):
+                stream = rag.answer_stream(
+                    RagQuery(
+                        owner_id=user.id, question=body.question, document_ids=body.document_ids
+                    ),
+                    conversation_id=conversation_id,
+                )
+                async for part in stream:
+                    if await request.is_disconnected():
+                        closer = getattr(stream, "aclose", None)
+                        if closer is not None:
+                            await closer()
+                        return
+                    if isinstance(part, AnswerToken):
+                        yield _sse({"type": "delta", "text": part.text})
+                    else:
+                        payload = AnswerResponse.from_result(part).model_dump(mode="json")
+                        yield _sse({"type": "final", "answer": payload})
         except DomainError as exc:
             yield _sse(
                 {

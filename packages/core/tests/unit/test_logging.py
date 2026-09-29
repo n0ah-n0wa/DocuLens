@@ -3,9 +3,13 @@ import logging
 
 import pytest
 import structlog
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pydantic import SecretStr
 
-from doculens.infrastructure.config import LogFormat, LogLevel
-from doculens.infrastructure.logging import configure_logging
+from doculens.application.tracing import start_span
+from doculens.infrastructure.config import CoreSettings, LogFormat, LogLevel, OtelTracesExporter
+from doculens.infrastructure.logging import configure_logging, redact_sensitive_event
+from doculens.infrastructure.telemetry import configure_tracing
 
 pytestmark = pytest.mark.unit
 
@@ -162,3 +166,95 @@ def test_console_format_renders_without_error(capsys: pytest.CaptureFixture[str]
     output = capsys.readouterr().out
     assert "readable" in output
     assert "doculens-test" in output
+
+
+def test_sensitive_keys_are_redacted_from_structured_logs(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging(
+        service="doculens-test", environment="local", level=LogLevel.INFO, log_format=LogFormat.JSON
+    )
+
+    # Sentinel values prove redaction; never appear in the rendered log line.
+    fields = {
+        "password": "hunter2-must-never-be-logged",
+        "api_key": "sk-secret-must-never-be-logged",
+        "access_token": "tok-must-never-be-logged",
+        "authorization": "Bearer tok-must-never-be-logged",
+        "prompt": "ignore previous instructions",
+        "question": "what is in the contract?",
+        "content": "full private document body",
+        "input_tokens": 12,
+        "output_tokens": 4,
+        "user_id": "user-1",
+        "request_id": "req-9",
+    }
+    structlog.get_logger("doculens.test").info("auth attempt", **fields)
+
+    (entry,) = _json_lines(capsys.readouterr().out)
+    redacted = "[redacted]"
+    assert entry["password"] == redacted
+    assert entry["api_key"] == redacted
+    assert entry["access_token"] == redacted
+    assert entry["authorization"] == redacted
+    assert entry["prompt"] == redacted
+    assert entry["question"] == redacted
+    assert entry["content"] == redacted
+    assert entry["input_tokens"] == 12
+    assert entry["output_tokens"] == 4
+    assert entry["user_id"] == "user-1"
+    assert entry["request_id"] == "req-9"
+    rendered = json.dumps(entry)
+    assert "hunter2" not in rendered
+    assert "sk-secret" not in rendered
+    assert "full private document body" not in rendered
+
+
+def test_redact_sensitive_event_masks_known_keys_in_place() -> None:
+    event = {
+        "message": "ok",
+        "password": "x",
+        "refresh_token": "y",
+        "chunk_text": "private",
+        "tokens": 3,
+        "operation": "auth.login",
+    }
+    result = redact_sensitive_event(None, "info", event)
+    redacted = "[redacted]"
+    assert result["password"] == redacted
+    assert result["refresh_token"] == redacted
+    assert result["chunk_text"] == redacted
+    assert result["tokens"] == 3
+    assert result["operation"] == "auth.login"
+
+
+def test_trace_context_is_added_when_a_span_is_active(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging(
+        service="doculens-test", environment="local", level=LogLevel.INFO, log_format=LogFormat.JSON
+    )
+    configure_tracing(
+        service_name="doculens-test",
+        settings=CoreSettings(
+            _env_file=None,
+            database_url=SecretStr(
+                "postgresql+asyncpg://doculens:doculens@localhost:5432/doculens"
+            ),
+            otel_traces_exporter=OtelTracesExporter.OTLP,
+            otel_exporter_otlp_endpoint="http://127.0.0.1:4318",
+        ),
+        exporter=InMemorySpanExporter(),
+    )
+    with start_span("unit.test"):
+        structlog.get_logger("doculens.test").info("correlated")
+
+    entries = _json_lines(capsys.readouterr().out)
+    entry = next(item for item in entries if item.get("message") == "correlated")
+    trace_id = entry["trace_id"]
+    span_id = entry["span_id"]
+    assert isinstance(trace_id, str)
+    assert len(trace_id) == 32
+    assert isinstance(span_id, str)
+    assert len(span_id) == 16
+    assert trace_id != "0" * 32

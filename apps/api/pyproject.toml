@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
   "doculens-core",
   "fastapi==0.141.1",
+  "opentelemetry-instrumentation-fastapi==0.66b0",
   "pydantic==2.13.5",
   "python-multipart==0.0.32",
   "uvicorn==0.53.0",

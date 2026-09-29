@@ -38,6 +38,7 @@ from doculens.application.chunking import DocumentChunker
 from doculens.application.documents import clean_filename, ensure_collection_owned
 from doculens.application.embeddings import EmbeddingProvider
 from doculens.application.storage import ObjectStorage
+from doculens.application.tracing import set_span_attributes, start_span
 from doculens.application.unit_of_work import UnitOfWork, UnitOfWorkFactory
 from doculens.application.vectors import VectorStore, records_for_chunks
 from doculens.domain.documents import Document, DocumentChunk, DocumentPage, ProcessingStatus
@@ -123,6 +124,7 @@ class DocumentIntakeService:
         declared_mime_type: str,
         data: bytes,
         collection_id: UUID | None = None,
+        request_id: str | None = None,
     ) -> Document:
         """Validate, store and register an upload; nothing persists unless every step succeeds."""
         name = clean_filename(filename)
@@ -168,7 +170,7 @@ class DocumentIntakeService:
             await self._discard_quietly(key)
             raise
         if self._jobs is not None:
-            await self._jobs.enqueue_quietly(document.id)
+            await self._jobs.enqueue_quietly(document.id, request_id=request_id)
         logger.info(
             "document accepted",
             extra={
@@ -176,6 +178,7 @@ class DocumentIntakeService:
                 "document_id": str(document.id),
                 "user_id": str(owner_id),
                 "file_size": len(data),
+                "request_id": request_id,
             },
         )
         return document
@@ -259,6 +262,21 @@ class DocumentProcessor:
         self._index_window = max(1, index_window)
 
     async def process(self, document_id: UUID) -> ProcessingReport:
+        with start_span(
+            "ingestion.process",
+            attributes={"document_id": str(document_id)},
+        ) as span:
+            report = await self._process(document_id)
+            set_span_attributes(
+                span,
+                {
+                    "outcome": report.outcome.value,
+                    "stages": len(report.stages),
+                },
+            )
+            return report
+
+    async def _process(self, document_id: UUID) -> ProcessingReport:
         async with self._unit_of_work() as uow:
             document = await uow.documents.get_for_processing(document_id)
         if document is None:
@@ -279,20 +297,25 @@ class DocumentProcessor:
                 document = await self._advance(document, ProcessingStatus.VALIDATING)
             if document.processing_status is ProcessingStatus.VALIDATING:
                 stages.append(ProcessingStatus.VALIDATING)
-                document, data = await self._validate(document)
+                with start_span("ingestion.validate", attributes={"document_id": str(document_id)}):
+                    document, data = await self._validate(document)
             if document.processing_status is ProcessingStatus.EXTRACTING:
                 stages.append(ProcessingStatus.EXTRACTING)
-                document = await self._extract(document, data)
+                with start_span("ingestion.extract", attributes={"document_id": str(document_id)}):
+                    document = await self._extract(document, data)
             if document.processing_status is ProcessingStatus.CHUNKING:
                 stages.append(ProcessingStatus.CHUNKING)
-                document = await self._chunk(document)
+                with start_span("ingestion.chunk", attributes={"document_id": str(document_id)}):
+                    document = await self._chunk(document)
             embedded: _Embedded | None = None
             if document.processing_status is ProcessingStatus.EMBEDDING:
                 stages.append(ProcessingStatus.EMBEDDING)
-                document, embedded = await self._embed(document)
+                with start_span("ingestion.embed", attributes={"document_id": str(document_id)}):
+                    document, embedded = await self._embed(document)
             if document.processing_status is ProcessingStatus.INDEXING:
                 stages.append(ProcessingStatus.INDEXING)
-                document = await self._index(document, embedded)
+                with start_span("ingestion.index", attributes={"document_id": str(document_id)}):
+                    document = await self._index(document, embedded)
         except _LostRaceError:
             await self._discard_vectors_if_terminating(document_id)
             logger.info(

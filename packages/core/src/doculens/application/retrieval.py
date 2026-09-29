@@ -31,6 +31,7 @@ from uuid import UUID
 
 from doculens.application.embeddings import EmbeddingProvider
 from doculens.application.reranking import RerankingStage
+from doculens.application.tracing import set_span_attributes, start_span
 from doculens.application.unit_of_work import UnitOfWork, UnitOfWorkFactory
 from doculens.application.vectors import VectorStore
 from doculens.domain.collections import CollectionNotFoundError
@@ -318,6 +319,40 @@ class RetrievalService:
         collection_id: UUID | None = None,
     ) -> RetrievalResult:
         """Evidence for ``question`` within the owner's scope; empty when nothing qualifies."""
+        with start_span(
+            "retrieval.retrieve",
+            attributes={
+                "user_id": str(owner_id),
+                "retriever": self._retriever.name,
+            },
+        ) as span:
+            result = await self._retrieve(
+                owner_id,
+                question,
+                document_ids=document_ids,
+                collection_id=collection_id,
+            )
+            set_span_attributes(
+                span,
+                {
+                    "documents_in_scope": result.stats.documents_in_scope,
+                    "hits": result.stats.hits,
+                    "evidence": len(result.evidence),
+                    "reranking": result.reranking.status.value,
+                    "context_items": len(result.context.items),
+                    "latency_ms": result.stats.latency_ms,
+                },
+            )
+            return result
+
+    async def _retrieve(
+        self,
+        owner_id: UUID,
+        question: str,
+        *,
+        document_ids: Sequence[UUID] | None = None,
+        collection_id: UUID | None = None,
+    ) -> RetrievalResult:
         started = time.perf_counter()
         query = self._preprocessor.prepare(question)
         scope = RetrievalScope(

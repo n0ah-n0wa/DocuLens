@@ -58,6 +58,7 @@ class ProcessingJob:
     attempt: int
     enqueued_at: datetime
     request_id: str | None = None
+    traceparent: str | None = None
 
     @classmethod
     def create(
@@ -65,6 +66,7 @@ class ProcessingJob:
         document_id: UUID,
         *,
         request_id: str | None = None,
+        traceparent: str | None = None,
         attempt: int = 1,
         now: datetime | None = None,
     ) -> "ProcessingJob":
@@ -74,6 +76,7 @@ class ProcessingJob:
             attempt=max(1, attempt),
             enqueued_at=now if now is not None else utc_now(),
             request_id=request_id,
+            traceparent=traceparent,
         )
 
 

@@ -179,13 +179,21 @@ class DocumentService:
             await uow.documents.compare_and_update(reverted, expected_status=expected_status)
             await uow.commit()
 
-    async def reprocess(self, owner_id: UUID, document_id: UUID) -> Document:
+    async def reprocess(
+        self, owner_id: UUID, document_id: UUID, *, request_id: str | None = None
+    ) -> Document:
         """Restart the pipeline from the stored original (ADR-019): ``VALIDATING`` onwards."""
-        return await self._restart(owner_id, document_id, ProcessingStatus.VALIDATING)
+        return await self._restart(
+            owner_id, document_id, ProcessingStatus.VALIDATING, request_id=request_id
+        )
 
-    async def reindex(self, owner_id: UUID, document_id: UUID) -> Document:
+    async def reindex(
+        self, owner_id: UUID, document_id: UUID, *, request_id: str | None = None
+    ) -> Document:
         """Re-chunk and re-embed from stored pages, skipping extraction (ADR-019)."""
-        return await self._restart(owner_id, document_id, ProcessingStatus.CHUNKING)
+        return await self._restart(
+            owner_id, document_id, ProcessingStatus.CHUNKING, request_id=request_id
+        )
 
     async def delete(self, owner_id: UUID, document_id: UUID) -> None:
         """Remove the document's content from every store; a second call is a no-op (§31)."""
@@ -205,7 +213,12 @@ class DocumentService:
         )
 
     async def _restart(
-        self, owner_id: UUID, document_id: UUID, target: ProcessingStatus
+        self,
+        owner_id: UUID,
+        document_id: UUID,
+        target: ProcessingStatus,
+        *,
+        request_id: str | None = None,
     ) -> Document:
         async with self._unit_of_work() as uow:
             current = await self._require_live(uow, owner_id, document_id)
@@ -230,7 +243,7 @@ class DocumentService:
                 raise InvalidStatusTransitionError
             await uow.commit()
         if self._jobs is not None:
-            await self._jobs.enqueue_quietly(document_id)
+            await self._jobs.enqueue_quietly(document_id, request_id=request_id)
         logger.info(
             "document processing restarted",
             extra={
@@ -239,6 +252,7 @@ class DocumentService:
                 "document_id": str(document_id),
                 "from_status": current.processing_status.value,
                 "to_status": target.value,
+                "request_id": request_id,
             },
         )
         return restarted

@@ -18,6 +18,7 @@ from doculens.application.conversations import ConversationService
 from doculens.application.documents import DocumentService
 from doculens.application.health import ReadinessService
 from doculens.application.ingestion import DocumentIntakeService
+from doculens.application.observability import bind_correlation
 from doculens.application.rag import RagService
 from doculens.application.ratelimit import RateLimiter
 from doculens.application.storage import ObjectStorage, OwnerScopedObjectStorage
@@ -100,10 +101,16 @@ async def get_current_user(
     request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> User:
-    """Resolve the bearer access token to an active user, or answer 401 (§8, §9)."""
+    """Resolve the bearer access token to an active user, or answer 401 (§8, §9).
+
+    On success the caller's ``user_id`` is bound into the logging context for the rest of the
+    request so subsequent log lines and metrics correlate without handlers repeating it (§50).
+    """
     if credentials is None or not credentials.credentials:
         raise UnauthenticatedError
-    return await components_of(request).auth.authenticate(credentials.credentials)
+    user = await components_of(request).auth.authenticate(credentials.credentials)
+    bind_correlation(user_id=user.id)
+    return user
 
 
 SettingsDep = Annotated[ApiSettings, Depends(get_settings)]

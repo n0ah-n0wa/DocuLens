@@ -12,6 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, File, Form, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
+from doculens.application.observability import bind_correlation
 from doculens.application.ratelimit import enforce
 from doculens.domain.common import UNSET
 from doculens.domain.documents import MAX_FILENAME_LENGTH, Document, ProcessingStatus
@@ -30,6 +31,7 @@ from doculens_api.errors import (
     NOT_FOUND_RESPONSE,
     PAYLOAD_TOO_LARGE_RESPONSE,
     RATE_LIMITED_RESPONSE,
+    request_id_of,
 )
 
 router = APIRouter(
@@ -157,6 +159,7 @@ async def upload_document(  # noqa: PLR0913, PLR0917 - FastAPI injects each coll
         declared_mime_type=declared_mime,
         data=data,
         collection_id=collection_id,
+        request_id=request_id_of(request),
     )
     return DocumentResponse.from_document(document)
 
@@ -190,6 +193,7 @@ async def list_documents(
 async def get_document(
     document_id: UUID, user: CurrentUserDep, documents: DocumentServiceDep
 ) -> DocumentResponse:
+    bind_correlation(document_id=document_id)
     return DocumentResponse.from_document(await documents.get(user.id, document_id))
 
 
@@ -204,6 +208,7 @@ async def update_document(
     user: CurrentUserDep,
     documents: DocumentServiceDep,
 ) -> DocumentResponse:
+    bind_correlation(document_id=document_id)
     document = await documents.update(
         user.id,
         document_id,
@@ -222,6 +227,7 @@ async def update_document(
 async def delete_document(
     document_id: UUID, user: CurrentUserDep, documents: DocumentServiceDep
 ) -> Response:
+    bind_correlation(document_id=document_id)
     await documents.delete(user.id, document_id)
     return Response(status_code=HTTPStatus.NO_CONTENT)
 
@@ -233,6 +239,7 @@ async def delete_document(
 )
 async def reprocess_document(
     document_id: UUID,
+    request: Request,
     user: CurrentUserDep,
     documents: DocumentServiceDep,
     settings: SettingsDep,
@@ -250,7 +257,10 @@ async def reprocess_document(
         limit=settings.ai_ops_daily_rate_limit_attempts,
         window_seconds=settings.ai_ops_daily_rate_limit_window_seconds,
     )
-    return DocumentResponse.from_document(await documents.reprocess(user.id, document_id))
+    bind_correlation(document_id=document_id)
+    return DocumentResponse.from_document(
+        await documents.reprocess(user.id, document_id, request_id=request_id_of(request))
+    )
 
 
 @router.post(
@@ -260,6 +270,7 @@ async def reprocess_document(
 )
 async def reindex_document(
     document_id: UUID,
+    request: Request,
     user: CurrentUserDep,
     documents: DocumentServiceDep,
     settings: SettingsDep,
@@ -277,4 +288,7 @@ async def reindex_document(
         limit=settings.ai_ops_daily_rate_limit_attempts,
         window_seconds=settings.ai_ops_daily_rate_limit_window_seconds,
     )
-    return DocumentResponse.from_document(await documents.reindex(user.id, document_id))
+    bind_correlation(document_id=document_id)
+    return DocumentResponse.from_document(
+        await documents.reindex(user.id, document_id, request_id=request_id_of(request))
+    )

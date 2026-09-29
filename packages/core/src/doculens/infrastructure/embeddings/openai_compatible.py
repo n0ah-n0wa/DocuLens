@@ -28,6 +28,8 @@ from typing import Any
 import httpx
 
 from doculens.application.embeddings import EmbeddingLimits, batched, validate_inputs
+from doculens.application.metrics import NAMESPACE_AI, emit_count, emit_latency_ms
+from doculens.application.tracing import start_span
 from doculens.domain.embeddings import (
     EmbeddingProviderUnavailableError,
     EmbeddingRateLimitedError,
@@ -99,29 +101,51 @@ class OpenAICompatibleEmbeddingProvider:
         await self._client.aclose()
 
     async def embed_documents(self, texts: Sequence[str]) -> EmbeddingResult:
-        validate_inputs(texts, self._config.limits)
-        if not texts:
-            return EmbeddingResult(vectors=(), model=self.model, dimensions=0)
-        batches = list(batched(texts, self._config.limits))
-        # A task group cancels the sibling batches when one fails permanently, so a rejected
-        # request does not leave paid requests running for a result nobody will use.
-        try:
-            async with asyncio.TaskGroup() as group:
-                tasks = [group.create_task(self._embed_batch(batch)) for _, batch in batches]
-        except ExceptionGroup as failures:
-            # Report the first failure as itself; the group only served to cancel the rest.
-            raise failures.exceptions[0] from failures
-        vectors: list[Vector] = []
-        usage = EmbeddingUsage()
-        for task in tasks:
-            result = task.result()
-            vectors.extend(result.vectors)
-            usage += result.usage
-        return EmbeddingResult.build(vectors, model=self.model, usage=usage)
+        with start_span(
+            "embedding.embed_documents",
+            attributes={
+                "embedding.provider": self.name,
+                "embedding.model": self.model,
+                "embedding.inputs": len(texts),
+            },
+        ):
+            try:
+                validate_inputs(texts, self._config.limits)
+                if not texts:
+                    return EmbeddingResult(vectors=(), model=self.model, dimensions=0)
+                batches = list(batched(texts, self._config.limits))
+                # A task group cancels the sibling batches when one fails permanently, so a rejected
+                # request does not leave paid requests running for a result nobody will use.
+                try:
+                    async with asyncio.TaskGroup() as group:
+                        tasks = [
+                            group.create_task(self._embed_batch(batch)) for _, batch in batches
+                        ]
+                except ExceptionGroup as failures:
+                    # Report the first failure as itself; the group only served to cancel the rest.
+                    raise failures.exceptions[0] from failures
+                vectors: list[Vector] = []
+                usage = EmbeddingUsage()
+                for task in tasks:
+                    result = task.result()
+                    vectors.extend(result.vectors)
+                    usage += result.usage
+                return EmbeddingResult.build(vectors, model=self.model, usage=usage)
+            except Exception as exc:
+                _emit_embedding_failure(self, exc)
+                raise
 
     async def embed_query(self, text: str) -> EmbeddingResult:
-        validate_inputs([text], self._config.limits)
-        return await self._embed_batch([text])
+        with start_span(
+            "embedding.embed_query",
+            attributes={"embedding.provider": self.name, "embedding.model": self.model},
+        ):
+            try:
+                validate_inputs([text], self._config.limits)
+                return await self._embed_batch([text])
+            except Exception as exc:
+                _emit_embedding_failure(self, exc)
+                raise
 
     # -- one batch with retries --------------------------------------------------------------------
 
@@ -196,6 +220,16 @@ class OpenAICompatibleEmbeddingProvider:
                 "attempt": attempt,
             },
         )
+        dims = {"provider": self.name, "model": self.model}
+        emit_latency_ms("EmbeddingLatency", latency_ms, namespace=NAMESPACE_AI, dimensions=dims)
+        emit_count("EmbeddingBatches", namespace=NAMESPACE_AI, dimensions=dims)
+        if result.usage.tokens:
+            emit_count(
+                "AiInputTokens",
+                float(result.usage.tokens),
+                namespace=NAMESPACE_AI,
+                dimensions={**dims, "kind": "embedding"},
+            )
         return result
 
     def _parse(
@@ -250,6 +284,20 @@ class OpenAICompatibleEmbeddingProvider:
         return EmbeddingResponseInvalidError(
             provider=self.name, model=self.model, diagnostics=diagnostics
         )
+
+
+def _emit_embedding_failure(
+    provider: OpenAICompatibleEmbeddingProvider, exc: BaseException
+) -> None:
+    emit_count(
+        "EmbeddingFailures",
+        namespace=NAMESPACE_AI,
+        dimensions={
+            "provider": provider.name,
+            "model": provider.model,
+            "error_code": type(exc).__name__,
+        },
+    )
 
 
 class _RetryableError(Exception):

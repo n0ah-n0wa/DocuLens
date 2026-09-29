@@ -26,6 +26,8 @@ from typing import Any
 import httpx
 
 from doculens.application.llm import LLMLimits
+from doculens.application.metrics import NAMESPACE_AI, emit_count, emit_latency_ms
+from doculens.application.tracing import start_span
 from doculens.domain.llm import (
     ChatMessage,
     FinishReason,
@@ -107,30 +109,42 @@ class OpenAICompatibleLLMProvider:
     async def generate(
         self, messages: Sequence[ChatMessage], *, options: GenerationOptions | None = None
     ) -> Generation:
-        validate_messages(messages, max_input_characters=self._config.limits.max_input_characters)
-        chosen = options or GenerationOptions()
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": message.role.value.lower(), "content": message.content}
-                for message in messages
-            ],
-            "max_tokens": min(chosen.max_output_tokens, self._config.limits.max_output_tokens),
-            "temperature": chosen.temperature,
-            "stream": False,
-        }
-        return await run_with_retries(
-            lambda attempt: self._request(payload, attempt),
-            policy=self._config.retry,
-            sleep=self._sleep,
-            jitter=self._jitter,
-            exhausted=self._exhausted,
-            logger=logger,
-            operation="llm.retry",
-            extra={"provider": self.name, "model": self.model},
-        )
+        with start_span(
+            "llm.generate",
+            attributes={"llm.provider": self.name, "llm.model": self.model},
+        ):
+            try:
+                validate_messages(
+                    messages, max_input_characters=self._config.limits.max_input_characters
+                )
+                chosen = options or GenerationOptions()
+                payload: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": [
+                        {"role": message.role.value.lower(), "content": message.content}
+                        for message in messages
+                    ],
+                    "max_tokens": min(
+                        chosen.max_output_tokens, self._config.limits.max_output_tokens
+                    ),
+                    "temperature": chosen.temperature,
+                    "stream": False,
+                }
+                return await run_with_retries(
+                    lambda attempt: self._request(payload, attempt),
+                    policy=self._config.retry,
+                    sleep=self._sleep,
+                    jitter=self._jitter,
+                    exhausted=self._exhausted,
+                    logger=logger,
+                    operation="llm.retry",
+                    extra={"provider": self.name, "model": self.model},
+                )
+            except Exception as exc:
+                _emit_llm_failure(self, exc)
+                raise
 
-    async def generate_stream(  # noqa: PLR0912, PLR0915 - SSE chunk parsing is inherently branchy
+    async def generate_stream(
         self, messages: Sequence[ChatMessage], *, options: GenerationOptions | None = None
     ) -> AsyncIterator[StreamEvent]:
         """OpenAI-compatible chat completions with ``stream: true`` (§44).
@@ -138,6 +152,20 @@ class OpenAICompatibleLLMProvider:
         Retries apply only before the first token; a mid-stream failure surfaces immediately so
         the answering use case can abandon the exchange without persisting partial text.
         """
+        with start_span(
+            "llm.generate_stream",
+            attributes={"llm.provider": self.name, "llm.model": self.model},
+        ):
+            try:
+                async for event in self._generate_stream(messages, options=options):
+                    yield event
+            except Exception as exc:
+                _emit_llm_failure(self, exc)
+                raise
+
+    async def _generate_stream(  # noqa: PLR0912, PLR0915 - SSE chunk parsing is inherently branchy
+        self, messages: Sequence[ChatMessage], *, options: GenerationOptions | None = None
+    ) -> AsyncIterator[StreamEvent]:
         validate_messages(messages, max_input_characters=self._config.limits.max_input_characters)
         chosen = options or GenerationOptions()
         payload: dict[str, Any] = {
@@ -250,6 +278,7 @@ class OpenAICompatibleLLMProvider:
                         "attempt": 1,
                     },
                 )
+                _emit_llm_metrics(self, generation)
                 yield StreamEvent(done=generation)
         except httpx.TimeoutException as exc:
             raise LLMProviderUnavailableError(
@@ -303,6 +332,7 @@ class OpenAICompatibleLLMProvider:
                 "attempt": attempt,
             },
         )
+        _emit_llm_metrics(self, generation)
         return generation
 
     def _parse(self, response: httpx.Response, *, latency_ms: float) -> Generation:
@@ -363,6 +393,44 @@ class OpenAICompatibleLLMProvider:
             retry_after_seconds=failure.retry_after,
             diagnostics=f"{failure.reason} after {attempts} attempts",
         )
+
+
+def _emit_llm_metrics(provider: OpenAICompatibleLLMProvider, generation: Generation) -> None:
+    # Prefer the configured model (bounded cardinality) over any upstream alias in the response.
+    dims = {"provider": provider.name, "model": provider.model}
+    emit_latency_ms(
+        "LlmLatency",
+        generation.usage.latency_ms,
+        namespace=NAMESPACE_AI,
+        dimensions=dims,
+    )
+    emit_count("LlmGenerations", namespace=NAMESPACE_AI, dimensions=dims)
+    if generation.usage.input_tokens:
+        emit_count(
+            "AiInputTokens",
+            float(generation.usage.input_tokens),
+            namespace=NAMESPACE_AI,
+            dimensions={**dims, "kind": "llm"},
+        )
+    if generation.usage.output_tokens:
+        emit_count(
+            "AiOutputTokens",
+            float(generation.usage.output_tokens),
+            namespace=NAMESPACE_AI,
+            dimensions={**dims, "kind": "llm"},
+        )
+
+
+def _emit_llm_failure(provider: OpenAICompatibleLLMProvider, exc: BaseException) -> None:
+    emit_count(
+        "LlmFailures",
+        namespace=NAMESPACE_AI,
+        dimensions={
+            "provider": provider.name,
+            "model": provider.model,
+            "error_code": type(exc).__name__,
+        },
+    )
 
 
 def _token_count(value: object) -> int | None:

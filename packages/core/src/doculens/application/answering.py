@@ -34,7 +34,14 @@ from uuid import UUID
 from doculens.application.auth import Clock
 from doculens.application.documents import ensure_collection_owned
 from doculens.application.llm import LLMProvider
+from doculens.application.metrics import (
+    NAMESPACE_AI,
+    NAMESPACE_RAG,
+    emit_count,
+    emit_latency_ms,
+)
 from doculens.application.retrieval import RetrievalResult, RetrievalService
+from doculens.application.tracing import set_span_attributes, start_span
 from doculens.application.unit_of_work import UnitOfWork, UnitOfWorkFactory
 from doculens.domain.answering import (
     BLOCKED_ANSWER_STATEMENT,
@@ -228,12 +235,46 @@ class AnswerService:
         document or collection scope wins; otherwise the conversation's collection, if any,
         scopes retrieval; otherwise every READY document of the owner.
         """
+        with start_span(
+            "answering.answer",
+            attributes={
+                "user_id": str(owner_id),
+                "conversation_id": str(conversation_id) if conversation_id else None,
+            },
+        ) as root:
+            result = await self._answer(
+                owner_id,
+                question,
+                conversation_id=conversation_id,
+                document_ids=document_ids,
+                collection_id=collection_id,
+            )
+            set_span_attributes(
+                root,
+                {
+                    "outcome": result.outcome.value,
+                    "evidence": result.retrieval.evidence,
+                    "citations": len(result.citations),
+                },
+            )
+            return result
+
+    async def _answer(
+        self,
+        owner_id: UUID,
+        question: str,
+        *,
+        conversation_id: UUID | None = None,
+        document_ids: Sequence[UUID] | None = None,
+        collection_id: UUID | None = None,
+    ) -> AnswerResult:
         started = time.perf_counter()
         state = await self._load_conversation(owner_id, question, conversation_id, collection_id)
         if document_ids is None and collection_id is None:
             collection_id = state.conversation.collection_id
 
-        rewrite = await self._rewriter.rewrite(question, state.history)
+        with start_span("answering.rewrite"):
+            rewrite = await self._rewriter.rewrite(question, state.history)
         retrieval_started = time.perf_counter()
         retrieval = await self._retrieval.retrieve(
             owner_id, rewrite.query, document_ids=document_ids, collection_id=collection_id
@@ -254,7 +295,13 @@ class AnswerService:
             prompt = self._prompt_builder.build(question, retrieval.context, history=state.history)
             try:
                 async with asyncio.timeout(self._limits.generation_timeout_seconds):
-                    generation = await self._llm.generate(prompt.messages, options=self._options)
+                    with start_span(
+                        "answering.generate",
+                        attributes={"llm.provider": self._llm.name, "llm.model": self._llm.model},
+                    ):
+                        generation = await self._llm.generate(
+                            prompt.messages, options=self._options
+                        )
             except TimeoutError as exc:
                 raise GenerationTimeoutError from exc
             cleaned = clean_references(generation.text, prompt.citation_indexes)
@@ -283,9 +330,13 @@ class AnswerService:
         generation_ms = _elapsed_ms(generation_started)
 
         persistence_started = time.perf_counter()
-        user_message, assistant_message, citations = await self._persist(
-            owner_id, state, question, answer_text, cited, retrieval
-        )
+        with start_span(
+            "answering.persist",
+            attributes={"conversation_id": str(state.conversation.id)},
+        ):
+            user_message, assistant_message, citations = await self._persist(
+                owner_id, state, question, answer_text, cited, retrieval
+            )
         persistence_ms = _elapsed_ms(persistence_started)
 
         result = AnswerResult(
@@ -338,11 +389,17 @@ class AnswerService:
                 "invalid_references": invalid,
                 "model": result.retrieval.model,
                 "total_ms": result.timing.total_ms,
+                "rewrite_ms": result.timing.rewrite_ms,
+                "retrieval_ms": result.timing.retrieval_ms,
+                "generation_ms": result.timing.generation_ms,
+                "input_tokens": result.usage.generation.input_tokens,
+                "output_tokens": result.usage.generation.output_tokens,
             },
         )
+        _emit_rag_metrics(result)
         return result
 
-    async def answer_stream(  # noqa: PLR0915 - mirrors answer(); streaming adds token yields
+    async def answer_stream(
         self,
         owner_id: UUID,
         question: str,
@@ -357,12 +414,48 @@ class AnswerService:
         in one transaction after generation completes successfully. Cancellation or a mid-stream
         failure persists nothing, so the conversation never shows a question without its answer.
         """
+        with start_span(
+            "answering.answer_stream",
+            attributes={
+                "user_id": str(owner_id),
+                "conversation_id": str(conversation_id) if conversation_id else None,
+            },
+        ) as root:
+            async for part in self._answer_stream(
+                owner_id,
+                question,
+                conversation_id=conversation_id,
+                document_ids=document_ids,
+                collection_id=collection_id,
+            ):
+                if isinstance(part, AnswerResult):
+                    set_span_attributes(
+                        root,
+                        {
+                            "outcome": part.outcome.value,
+                            "evidence": part.retrieval.evidence,
+                            "citations": len(part.citations),
+                            "streamed": True,
+                        },
+                    )
+                yield part
+
+    async def _answer_stream(  # noqa: PLR0915 - mirrors _answer(); streaming adds token yields
+        self,
+        owner_id: UUID,
+        question: str,
+        *,
+        conversation_id: UUID | None = None,
+        document_ids: Sequence[UUID] | None = None,
+        collection_id: UUID | None = None,
+    ) -> AsyncIterator[AnswerToken | AnswerResult]:
         started = time.perf_counter()
         state = await self._load_conversation(owner_id, question, conversation_id, collection_id)
         if document_ids is None and collection_id is None:
             collection_id = state.conversation.collection_id
 
-        rewrite = await self._rewriter.rewrite(question, state.history)
+        with start_span("answering.rewrite"):
+            rewrite = await self._rewriter.rewrite(question, state.history)
         retrieval_started = time.perf_counter()
         retrieval = await self._retrieval.retrieve(
             owner_id, rewrite.query, document_ids=document_ids, collection_id=collection_id
@@ -383,12 +476,20 @@ class AnswerService:
             prompt = self._prompt_builder.build(question, retrieval.context, history=state.history)
             try:
                 async with asyncio.timeout(self._limits.generation_timeout_seconds):
-                    async for event in self._llm.generate_stream(
-                        prompt.messages, options=self._options
+                    with start_span(
+                        "answering.generate",
+                        attributes={
+                            "llm.provider": self._llm.name,
+                            "llm.model": self._llm.model,
+                            "llm.stream": True,
+                        },
                     ):
-                        # Deltas are discarded until detect_violation passes (below).
-                        if event.done is not None:
-                            generation = event.done
+                        async for event in self._llm.generate_stream(
+                            prompt.messages, options=self._options
+                        ):
+                            # Deltas are discarded until detect_violation passes (below).
+                            if event.done is not None:
+                                generation = event.done
             except TimeoutError as exc:
                 raise GenerationTimeoutError from exc
             if generation is None:
@@ -429,9 +530,13 @@ class AnswerService:
         generation_ms = _elapsed_ms(generation_started)
 
         persistence_started = time.perf_counter()
-        user_message, assistant_message, citations = await self._persist(
-            owner_id, state, question, answer_text, cited, retrieval
-        )
+        with start_span(
+            "answering.persist",
+            attributes={"conversation_id": str(state.conversation.id)},
+        ):
+            user_message, assistant_message, citations = await self._persist(
+                owner_id, state, question, answer_text, cited, retrieval
+            )
         persistence_ms = _elapsed_ms(persistence_started)
 
         result = AnswerResult(
@@ -487,6 +592,7 @@ class AnswerService:
                 "streamed": True,
             },
         )
+        _emit_rag_metrics(result)
         yield result
 
     async def _load_conversation(
@@ -589,6 +695,69 @@ class AnswerService:
         if current is None:
             raise ConversationNotFoundError  # deleted while the answer was being produced
         await uow.conversations.update(replace(current, updated_at=updated_at))
+
+
+def _emit_rag_metrics(result: AnswerResult) -> None:
+    rag_dimensions = {"outcome": result.outcome.value}
+    emit_count("RagAnswers", namespace=NAMESPACE_RAG, dimensions=rag_dimensions)
+    emit_latency_ms(
+        "RagTotalLatency",
+        result.timing.total_ms,
+        namespace=NAMESPACE_RAG,
+        dimensions=rag_dimensions,
+    )
+    emit_latency_ms(
+        "RagRewriteLatency",
+        result.timing.rewrite_ms,
+        namespace=NAMESPACE_RAG,
+        dimensions=rag_dimensions,
+    )
+    emit_latency_ms(
+        "RagRetrievalLatency",
+        result.timing.retrieval_ms,
+        namespace=NAMESPACE_RAG,
+        dimensions=rag_dimensions,
+    )
+    emit_latency_ms(
+        "RagGenerationLatency",
+        result.timing.generation_ms,
+        namespace=NAMESPACE_RAG,
+        dimensions=rag_dimensions,
+    )
+    emit_latency_ms(
+        "RagPersistenceLatency",
+        result.timing.persistence_ms,
+        namespace=NAMESPACE_RAG,
+        dimensions=rag_dimensions,
+    )
+    emit_count(
+        "RagEvidenceChunks",
+        float(result.retrieval.evidence),
+        namespace=NAMESPACE_RAG,
+        dimensions=rag_dimensions,
+    )
+    if result.outcome is AnswerOutcome.BLOCKED:
+        emit_count("RagBlockedAnswers", namespace=NAMESPACE_RAG, dimensions=rag_dimensions)
+    if result.outcome is AnswerOutcome.INSUFFICIENT_EVIDENCE:
+        emit_count(
+            "RagInsufficientEvidence",
+            namespace=NAMESPACE_RAG,
+            dimensions=rag_dimensions,
+        )
+    if result.usage.generation.input_tokens:
+        emit_count(
+            "AiInputTokens",
+            float(result.usage.generation.input_tokens),
+            namespace=NAMESPACE_AI,
+            dimensions={"provider": "llm", "kind": "llm"},
+        )
+    if result.usage.generation.output_tokens:
+        emit_count(
+            "AiOutputTokens",
+            float(result.usage.generation.output_tokens),
+            namespace=NAMESPACE_AI,
+            dimensions={"provider": "llm", "kind": "llm"},
+        )
 
 
 def _bounded_history(

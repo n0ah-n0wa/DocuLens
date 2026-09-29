@@ -14,6 +14,7 @@ import structlog
 
 from doculens.infrastructure.config import ConfigurationError, CoreSettings, load_settings
 from doculens.infrastructure.logging import configure_logging
+from doculens.infrastructure.telemetry import configure_tracing, shutdown_tracing
 from doculens_worker import SERVICE_NAME, __version__
 from doculens_worker.processing import process_document, run_worker
 
@@ -44,6 +45,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - exit code
         level=settings.log_level,
         log_format=settings.log_format,
     )
+    configure_tracing(service_name=SERVICE_NAME, settings=settings, service_version=__version__)
     logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
     if command == "process":
         document_id = UUID(arguments[1])
@@ -56,6 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - exit code
                 document_id=str(document_id),
                 error_type=type(exc).__name__,
             )
+            shutdown_tracing()
             return EXIT_PROCESSING_FAILED
         logger.info(
             "document processed",
@@ -65,6 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - exit code
             status=report.status.value if report.status is not None else None,
             stages=[stage.value for stage in report.stages],
         )
+        shutdown_tracing()
         if report.outcome.value in {"processed", "no_op", "concurrent"}:
             return EXIT_OK
         return EXIT_PROCESSING_FAILED
@@ -80,10 +84,13 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911 - exit code
         asyncio.run(run_worker(settings, max_idle_polls=idle_polls))
     except KeyboardInterrupt:
         logger.info("worker stopped", operation="worker.stop")
+        shutdown_tracing()
         return EXIT_OK
     except Exception:
         logger.exception("worker aborted", operation="worker.abort")
+        shutdown_tracing()
         return EXIT_PROCESSING_FAILED
+    shutdown_tracing()
     return EXIT_OK
 
 

@@ -249,7 +249,9 @@ text with `status=PARTIAL` and no citations; do not persist system prompts (keep
 **Refs:** §51, §52, §5.4 (CloudWatch).
 **Problem:** "expose or collect" metrics — a Prometheus endpoint does not fit Lambda. OTel export target is unnamed.
 **Proposed default:** CloudWatch Embedded Metric Format via structured logs for metrics; OTel traces via the
-ADOT Lambda layer to X-Ray (console exporter locally).
+ADOT Lambda layer to X-Ray (console exporter locally). **Partial:** application code configures
+OTLP/HTTP or console exporters (`OTEL_TRACES_EXPORTER`); EMF metrics ship today. Remaining work is
+Terraform/ADOT layer attachment on Lambda.
 
 ### OQ-23 — How Alembic migrations run in CD
 

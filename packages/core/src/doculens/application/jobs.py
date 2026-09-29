@@ -16,6 +16,9 @@ from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, cast
 
+from doculens.application.metrics import NAMESPACE_DOCUMENTS, emit_count, emit_latency_ms
+from doculens.application.observability import correlation_context
+from doculens.application.tracing import attach_traceparent, inject_traceparent, start_span
 from doculens.domain.errors import DependencyUnavailableError
 from doculens.domain.jobs import (
     ClaimedJob,
@@ -101,9 +104,21 @@ class DocumentJobDispatcher:
         self, document_id: UUID, *, request_id: str | None = None, attempt: int = 1
     ) -> ProcessingJob:
         job = ProcessingJob.create(
-            document_id, request_id=request_id, attempt=attempt, now=self._clock()
+            document_id,
+            request_id=request_id,
+            traceparent=inject_traceparent(),
+            attempt=attempt,
+            now=self._clock(),
         )
-        await self._queue.enqueue(job)
+        with start_span(
+            "jobs.enqueue",
+            attributes={
+                "document_id": str(document_id),
+                "job_id": job.job_id,
+                "attempt": job.attempt,
+            },
+        ):
+            await self._queue.enqueue(job)
         logger.info(
             "document processing enqueued",
             extra={
@@ -237,6 +252,29 @@ class DocumentJobWorker:
         job = claim.job
         started = self._clock()
         lock = self._lock_for(job.document_id)
+        with (
+            attach_traceparent(job.traceparent),
+            correlation_context(
+                request_id=job.request_id,
+                document_id=job.document_id,
+                job_id=job.job_id,
+            ),
+            start_span(
+                "jobs.process",
+                attributes={
+                    "document_id": str(job.document_id),
+                    "job_id": job.job_id,
+                    "attempt": job.attempt,
+                    "request_id": job.request_id or "",
+                },
+            ),
+        ):
+            await self._handle_locked(claim, started, lock)
+
+    async def _handle_locked(
+        self, claim: ClaimedJob, started: datetime, lock: asyncio.Lock
+    ) -> None:
+        job = claim.job
         if lock.locked():
             # Another coroutine in this process already owns the document; delay and retry later
             # so we do not amplify duplicate deliveries into a retry storm.
@@ -281,6 +319,8 @@ class DocumentJobWorker:
             self._log_report(job, started, report)
 
     async def _retry_or_dead_letter(self, claim: ClaimedJob, *, error: str) -> None:
+        # Keep free-text reasons out of metrics; classify by a short stable code prefix.
+        error_code = error.split(":", 1)[0].strip()[:64] or "UNKNOWN"
         if claim.job.attempt >= self._max_attempts:
             await self._abandon_document(claim.job.document_id, reason=error)
             await self._safe_dead_letter(claim, error=error)
@@ -292,8 +332,13 @@ class DocumentJobWorker:
                     "job_id": claim.job.job_id,
                     "request_id": claim.job.request_id,
                     "attempt": claim.job.attempt,
-                    "error": error,
+                    "error_code": error_code,
                 },
+            )
+            emit_count(
+                "DocumentJobsDeadLettered",
+                namespace=NAMESPACE_DOCUMENTS,
+                dimensions={"error_code": error_code},
             )
             return
         delay = self.backoff_seconds(claim.job.attempt)
@@ -308,8 +353,13 @@ class DocumentJobWorker:
                 "attempt": claim.job.attempt,
                 "next_attempt": claim.job.attempt + 1,
                 "delay_seconds": round(delay, 3),
-                "error": error,
+                "error_code": error_code,
             },
+        )
+        emit_count(
+            "DocumentJobsRetried",
+            namespace=NAMESPACE_DOCUMENTS,
+            dimensions={"error_code": error_code},
         )
 
     async def _abandon_document(self, document_id: UUID, *, reason: str) -> None:
@@ -402,6 +452,20 @@ class DocumentJobWorker:
                 "status_ok": outcome in {"processed", "no_op", "concurrent", "skipped", "failed"},
             },
         )
+        dimensions = {"outcome": outcome}
+        emit_count("DocumentJobsProcessed", namespace=NAMESPACE_DOCUMENTS, dimensions=dimensions)
+        emit_latency_ms(
+            "DocumentProcessingDuration",
+            duration_ms,
+            namespace=NAMESPACE_DOCUMENTS,
+            dimensions=dimensions,
+        )
+        if outcome == "failed":
+            emit_count(
+                "DocumentProcessingFailures",
+                namespace=NAMESPACE_DOCUMENTS,
+                dimensions=dimensions,
+            )
 
     def _log_outcome(
         self,
@@ -424,6 +488,14 @@ class DocumentJobWorker:
                 "error_code": error_code,
                 "duration_ms": round(duration_ms, 1),
             },
+        )
+        dimensions = {"outcome": outcome, "error_code": error_code}
+        emit_count("DocumentJobsInterrupted", namespace=NAMESPACE_DOCUMENTS, dimensions=dimensions)
+        emit_latency_ms(
+            "DocumentProcessingDuration",
+            duration_ms,
+            namespace=NAMESPACE_DOCUMENTS,
+            dimensions=dimensions,
         )
 
 

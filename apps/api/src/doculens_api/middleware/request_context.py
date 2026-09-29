@@ -1,9 +1,10 @@
-"""Request correlation and access logging (SPECIFICATIONS.md §36, §50).
+"""Request correlation and access logging (SPECIFICATIONS.md §36, §50, §51).
 
 For every HTTP request the middleware resolves a request ID (a well-formed incoming header value
 is honoured so upstream proxies can correlate; anything else is replaced by a fresh UUID), exposes
 it as ``request.state.request_id``, returns it in the response header, binds it to the logging
-context for the duration of the request, and emits one access-log entry with the outcome.
+context for the duration of the request, emits one access-log entry with the outcome, and records
+request-count / latency application metrics (OQ-21 EMF).
 
 It must be the outermost middleware so that every other middleware and handler runs with the
 request ID bound; ``create_app`` therefore adds it last.
@@ -14,8 +15,11 @@ import time
 import uuid
 
 import structlog
+from opentelemetry import trace
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from doculens.infrastructure.metrics import NAMESPACE_API, emit_count, emit_latency_ms
 
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
@@ -49,18 +53,39 @@ class RequestContextMiddleware:
         # Scoped binding: context bound by the host (for example a Lambda adapter) is preserved
         # and restored; only ``request_id`` is added for the lifetime of this request.
         with structlog.contextvars.bound_contextvars(request_id=request_id):
+            span = trace.get_current_span()
+            if span.is_recording():
+                span.set_attribute("request_id", request_id)
             try:
                 await self._app(scope, receive, send_with_request_id)
             finally:
                 duration_ms = round((time.perf_counter() - started) * 1000, 2)
+                method = scope["method"]
+                path = scope["path"]
+                status_class = f"{status_code // 100}xx"
                 logger.info(
                     "request completed",
                     operation="http.request",
-                    method=scope["method"],
-                    path=scope["path"],
+                    method=method,
+                    path=path,
                     status_code=status_code,
                     duration_ms=duration_ms,
                 )
+                dimensions = {
+                    "method": method,
+                    "status_class": status_class,
+                }
+                emit_count("HttpRequests", namespace=NAMESPACE_API, dimensions=dimensions)
+                emit_latency_ms(
+                    "HttpRequestDuration",
+                    duration_ms,
+                    namespace=NAMESPACE_API,
+                    dimensions=dimensions,
+                )
+                if status_code >= 500:  # noqa: PLR2004 - HTTP server-error class
+                    emit_count("HttpServerErrors", namespace=NAMESPACE_API, dimensions=dimensions)
+                elif status_code >= 400:  # noqa: PLR2004 - HTTP client-error class
+                    emit_count("HttpClientErrors", namespace=NAMESPACE_API, dimensions=dimensions)
 
     def _resolve_request_id(self, scope: Scope) -> str:
         wanted = self._header_name.lower().encode("latin-1")

@@ -3,20 +3,131 @@
 Every process emits one JSON object per line (console rendering is for local development only)
 carrying ``timestamp``, ``level``, ``logger``, ``service``, ``environment``, ``message`` and
 whatever the current request or job has bound through structlog context variables (``request_id``,
-``user_id``, ``document_id``, ...). Standard-library loggers, including uvicorn's, are routed
-through the same pipeline so that every line has one shape. Callers are responsible for never
-binding secrets or document contents.
+``user_id``, ``document_id``, ``conversation_id``, ...). Standard-library loggers, including
+uvicorn's, are routed through the same pipeline so that every line has one shape.
+
+Callers must never bind secrets or document contents. A defensive redaction processor still
+strips known sensitive keys if they appear, so a mistaken ``password=`` kwarg cannot land in
+production logs.
 """
+
+from __future__ import annotations
 
 import logging
 import sys
+from typing import TYPE_CHECKING
 
 import structlog
-from structlog.typing import EventDict, Processor, WrappedLogger
+from opentelemetry import trace
 
+from doculens.application.metrics import configure_metrics
 from doculens.infrastructure.config import LogFormat, LogLevel
 
+if TYPE_CHECKING:
+    from structlog.typing import EventDict, Processor, WrappedLogger
+
 _OWNED_HANDLER_MARK = "_doculens_handler"
+
+# Exact keys that must never carry private document body or prompt text into logs.
+_CONTENT_KEYS: frozenset[str] = frozenset(
+    {
+        "content",
+        "body",
+        "data",
+        "text",
+        "page_text",
+        "extracted_text",
+        "prompt",
+        "messages",
+        "answer",
+        "question",
+        "evidence_text",
+        "chunk_text",
+        "raw",
+        "payload",
+    }
+)
+
+# Exact sensitive credential keys (usage counters like ``input_tokens`` are intentionally allowed).
+_SENSITIVE_KEYS: frozenset[str] = frozenset(
+    {
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "bearer",
+        "api_key",
+        "apikey",
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "refresh_token",
+        "access_token",
+        "jwt",
+        "private_key",
+        "credential",
+        "credentials",
+    }
+)
+
+_ALLOWED_TOKEN_USAGE_KEYS: frozenset[str] = frozenset(
+    {
+        "tokens",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "token_count",
+    }
+)
+
+_PROTECTED_META_KEYS: frozenset[str] = frozenset(
+    {
+        "operation",
+        "message",
+        "level",
+        "logger",
+        "service",
+        "environment",
+        "timestamp",
+        "metric",
+        "metric_name",
+        "metric_namespace",
+        "metric_unit",
+        "_aws",
+    }
+)
+
+_REDACTED = "[redacted]"
+
+
+def _is_sensitive_key(key: str) -> bool:
+    lowered = str(key).lower()
+    if lowered in _PROTECTED_META_KEYS or lowered in _ALLOWED_TOKEN_USAGE_KEYS:
+        return False
+    if lowered in _CONTENT_KEYS or lowered in _SENSITIVE_KEYS:
+        return True
+    if lowered.endswith(("_password", "_secret")):
+        return True
+    # ``refresh_token`` / ``access_token`` / ``id_token`` — not ``*_tokens`` usage counters.
+    return lowered.endswith("_token") and not lowered.endswith("_tokens")
+
+
+def redact_sensitive_event(_logger: WrappedLogger, _method: str, event: EventDict) -> EventDict:
+    """Drop or mask fields that must never appear in logs (§50, §68)."""
+    for key in list(event.keys()):
+        if _is_sensitive_key(str(key)):
+            event[key] = _REDACTED
+    return event
+
+
+def add_trace_context(_logger: WrappedLogger, _method: str, event: EventDict) -> EventDict:
+    """Attach the active OpenTelemetry ``trace_id`` / ``span_id`` for log↔trace joins (§52)."""
+    context = trace.get_current_span().get_span_context()
+    if not context.is_valid:
+        return event
+    event.setdefault("trace_id", format(context.trace_id, "032x"))
+    event.setdefault("span_id", format(context.span_id, "016x"))
+    return event
 
 
 def configure_logging(
@@ -25,8 +136,10 @@ def configure_logging(
     """Configure structlog and the standard library root logger for this process.
 
     Calling it again replaces the handler it installed earlier and leaves handlers installed by
-    others (test frameworks, host runtimes) untouched.
+    others (test frameworks, host runtimes) untouched. Also installs the EMF metrics identity
+    (OQ-21) so metric lines share ``service`` / ``environment``.
     """
+    configure_metrics(service=service, environment=environment)
 
     def add_service_context(_logger: WrappedLogger, _method: str, event: EventDict) -> EventDict:
         event.setdefault("service", service)
@@ -36,6 +149,8 @@ def configure_logging(
     shared_processors: list[Processor] = [
         structlog.contextvars.merge_contextvars,
         add_service_context,
+        add_trace_context,
+        redact_sensitive_event,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True, key="timestamp"),
@@ -94,3 +209,6 @@ def configure_logging(
     access_logger = logging.getLogger("uvicorn.access")
     access_logger.handlers.clear()
     access_logger.propagate = False
+
+
+__all__ = ["add_trace_context", "configure_logging", "redact_sensitive_event"]

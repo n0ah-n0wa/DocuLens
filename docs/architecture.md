@@ -680,26 +680,33 @@ Production deployment never depends on a developer machine.
 
 ## 14. Observability
 
-**Implemented** (§36, §50): both processes emit one JSON object per line with `timestamp`,
-`level`, `logger`, `service`, `environment`, `message` and the fields bound to the current
-context; the API binds `request_id` for the lifetime of each request and writes one access-log
-entry per request with `operation`, `method`, `path`, `status_code` and `duration_ms`. Console
-rendering exists for local development only and is rejected in deployed environments.
-Standard-library and uvicorn records flow through the same pipeline.
+**Implemented** (§36, §50, §51, §52 / OQ-21): both processes emit one JSON object per line with
+`timestamp`, `level`, `logger`, `service`, `environment`, `message` and the fields bound to the
+current context (`request_id`, and when known `user_id`, `document_id`, `conversation_id`,
+`job_id`); a defensive redaction processor strips passwords, tokens, API keys and private content
+fields if they appear (§68). The API binds `request_id` for the lifetime of each request, writes
+one access-log entry per request with `operation`, `method`, `path`, `status_code` and
+`duration_ms`, and emits CloudWatch Embedded Metric Format lines for HTTP request counts, latency
+and 5xx errors. Document jobs, RAG answers and AI providers (embeddings / LLM) emit count and
+latency metrics under `DocuLens/Documents`, `DocuLens/RAG` and `DocuLens/AI`.
+
+OpenTelemetry traces (§52) cover HTTP → answering / document jobs → `db.unit_of_work` →
+retrieval → reranking → LLM / embeddings → persistence, plus ingestion stages when the worker
+runs them. Queue payloads carry `request_id` and W3C `traceparent` so worker spans continue the
+originating request. Span attributes are identifiers, counts, models and outcomes only — never
+prompts, answers, document text, passwords or API keys. Export is selected by
+`OTEL_TRACES_EXPORTER` (`none` | `console` | `otlp`); see [`development.md`](development.md)
+for local and production setup. Console rendering of logs exists for local development only and
+is rejected in deployed environments. Standard-library and uvicorn records flow through the same
+logging pipeline.
 
 **Planned** (§50–§52):
 
-- Additional bound fields as their features arrive: `user_id`, `document_id`,
-  `conversation_id`, `error_code`; sensitive values never logged (§68).
-- Metrics for the API (requests, errors, latency, status codes), documents (processing duration,
-  failures, pages, chunks), RAG (retrieval, reranking and LLM latency, chunk counts, context size)
-  and AI (tokens, models, estimated cost, failed requests).
-- OpenTelemetry traces spanning HTTP request → document processing → retrieval → reranking → LLM
-  request → persistence; the trace context and request ID cross the queue inside the job message
-  so the worker's spans attach to the originating request.
+- Estimated AI cost and a dedicated usage ledger (OQ-8 / OQ-11).
 - Dead-letter depth and failed-job counts feed alarms (§51, §66).
 
-**Pending:** `OQ-21` — trace exporter and the metrics mechanism suitable for Lambda.
+**Pending:** `OQ-21` — ADOT Lambda layer wiring in Terraform (application OTLP export is ready;
+metrics already use EMF via structured logs).
 
 ---
 
@@ -779,4 +786,4 @@ Trust boundaries fixed by the specification (§22, §53, §68):
 | Authorization             | §9 ownership on collections, documents, conversations, messages, citations                                                                                                                                                                                                                                                                                                                                                                                                                                   | vector and object-store scoping                                            | —                                                 |
 | AWS                       | Terraform roots                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | §57 modules, VPC egress, OIDC                                              | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28      |
 | CI/CD                     | CI pipeline                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | integration job, CD pipeline                                               | —                                                 |
-| Observability             | structured JSON logs, request correlation, access log                                                                                                                                                                                                                                                                                                                                                                                                                                                        | metrics, tracing, queue correlation, DLQ alarms                            | OQ-21                                             |
+| Observability             | structured JSON logs, request/user/doc/conversation correlation, access log, privacy redaction, EMF metrics (HTTP, documents, RAG, AI) + latency, OpenTelemetry traces (HTTP→DB→retrieval→rerank→LLM→persist; job `traceparent`)                                                                                                                                                                                                                                                                             | cost ledger, DLQ alarms, ADOT Terraform wiring                             | OQ-21 (ADOT deploy)                               |

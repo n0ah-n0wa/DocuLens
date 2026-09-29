@@ -106,6 +106,14 @@ class RateLimitBackend(StrEnum):
     REDIS = "redis"
 
 
+class OtelTracesExporter(StrEnum):
+    """Trace export selected by ``OTEL_TRACES_EXPORTER`` (§52, OQ-21)."""
+
+    NONE = "none"
+    CONSOLE = "console"
+    OTLP = "otlp"
+
+
 class ConfigurationError(RuntimeError):
     """Raised at start-up when the environment does not describe a valid configuration."""
 
@@ -129,6 +137,36 @@ class CoreSettings(BaseSettings):
     log_format: LogFormat = Field(
         default=LogFormat.JSON,
         description="json for machine-readable logs; console is for local development only.",
+    )
+    otel_traces_exporter: OtelTracesExporter = Field(
+        default=OtelTracesExporter.NONE,
+        description=(
+            "OpenTelemetry traces (§52): none (off), console (local debugging), "
+            "otlp (ADOT / collector; required shape when tracing in staging/production)."
+        ),
+    )
+    otel_exporter_otlp_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "OTLP/HTTP traces endpoint (collector base URL or full /v1/traces path). "
+            "When unset, the OpenTelemetry SDK default / env OTEL_EXPORTER_OTLP_ENDPOINT applies."
+        ),
+    )
+    otel_service_name: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Overrides the process service name reported on spans.",
+    )
+    otel_service_version: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Optional service.version resource attribute.",
+    )
+    otel_traces_sampler_ratio: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Parent-based trace-id ratio sampler (1.0 = always sample).",
     )
 
     database_url: SecretStr = Field(
@@ -500,6 +538,20 @@ class CoreSettings(BaseSettings):
         problems: list[str] = []
         if self.log_format is not LogFormat.JSON:
             problems.append("LOG_FORMAT must be json (structured logging is required, §50)")
+        if self.otel_traces_exporter is OtelTracesExporter.CONSOLE:
+            problems.append(
+                "OTEL_TRACES_EXPORTER must not be console when deployed "
+                "(use otlp for ADOT/X-Ray, or none to disable, §52)"
+            )
+        if (
+            self.otel_traces_exporter is OtelTracesExporter.OTLP
+            and self.otel_exporter_otlp_endpoint is None
+        ):
+            # ADOT may inject OTEL_EXPORTER_OTLP_ENDPOINT; require an explicit DocuLens setting
+            # so misconfigured deploys fail closed rather than silently dropping traces.
+            problems.append(
+                "OTEL_EXPORTER_OTLP_ENDPOINT is required when OTEL_TRACES_EXPORTER=otlp"
+            )
         if self.database_echo:
             problems.append("DATABASE_ECHO must be false (statement logging can expose data, §68)")
         if self.queue_backend is not QueueBackend.SQS:
