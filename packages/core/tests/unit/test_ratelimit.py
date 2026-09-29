@@ -1,5 +1,6 @@
 """Fixed-window limiter: budget per key, window reset, retry hints, no cross-key bleed."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -149,6 +150,8 @@ def test_build_rate_limiter_auto_follows_redis_queue() -> None:
     )
     limiter = build_rate_limiter(settings)
     assert isinstance(limiter, RedisRateLimiter)
+    # from_url opens an asyncio client; close it so the suite never inherits a live pool.
+    asyncio.run(limiter.close())
 
 
 def test_build_rate_limiter_requires_redis_url_when_explicit() -> None:

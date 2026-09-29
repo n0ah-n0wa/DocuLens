@@ -224,7 +224,11 @@ def run_in_child(
 if sys.platform != "win32":
 
     def _apply_memory_limit(memory_limit_bytes: int | None) -> None:
-        """Best effort: a host that forbids the limit must not fail every document."""
+        """Best effort: a host that forbids the limit must not fail every document.
+
+        Call only from the parser child (``run_in_child``). Applying ``RLIMIT_AS`` in the
+        parent permanently caps that process — including the pytest worker on Linux CI.
+        """
         if memory_limit_bytes is None:
             return
         try:
@@ -241,7 +245,11 @@ if sys.platform != "win32":
 else:
 
     def _apply_memory_limit(memory_limit_bytes: int | None) -> None:
-        """Cap the parser child's commit charge via a Windows Job Object (best effort)."""
+        """Cap the parser child's commit charge via a Windows Job Object (best effort).
+
+        Call only from the parser child. Assigning a Job Object to the parent is sticky for
+        the rest of that process lifetime.
+        """
         if memory_limit_bytes is None:
             return
         try:

@@ -1,5 +1,6 @@
 """The isolated PyMuPDF extractor: real parsing in a child process, bounded and fail-safe."""
 
+import sys
 import time
 
 import pytest
@@ -217,7 +218,25 @@ async def test_a_parser_answer_that_is_not_json_is_refused(sample: bytes) -> Non
     assert "not valid JSON" in (excinfo.value.diagnostics or "")
 
 
-def test_memory_limit_helper_is_best_effort() -> None:
-    """Applying a process memory cap must never crash the worker if the OS refuses."""
+def test_memory_limit_helper_is_best_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Applying a process memory cap must never crash the worker if the OS refuses.
+
+    The helper is meant only for the parser child. Calling a real ``setrlimit`` /
+    Job Object against this process would permanently cap the rest of the suite
+    (Linux CI hung after this test once ``RLIMIT_AS`` was lowered to 512 MiB).
+    """
     _apply_memory_limit(None)
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise OSError("refused")
+
+    if sys.platform != "win32":
+        import resource
+
+        monkeypatch.setattr(resource, "setrlimit", refuse)
+    else:
+        monkeypatch.setattr(
+            "doculens.infrastructure.pdf.pymupdf_extractor._apply_windows_job_memory_limit",
+            refuse,
+        )
     _apply_memory_limit(512 * 1024 * 1024)
