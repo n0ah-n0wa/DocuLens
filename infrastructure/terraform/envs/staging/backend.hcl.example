@@ -1,0 +1,18 @@
+# Example backend configuration (git-ignored when copied to backend.hcl).
+#
+# Bootstrap once per AWS account (manual / separate bootstrap stack):
+#   1. S3 bucket with versioning + SSE-KMS (prefer a dedicated state CMK)
+#   2. DynamoDB table with LockID (S) for state locking
+#   3. Bucket policy denying non-TLS and public access
+#   4. Separate state keys / backends for staging vs production (isolation)
+#
+# Then:
+#   cp backend.hcl.example backend.hcl
+#   terraform init -backend-config=backend.hcl
+
+bucket         = "doculens-terraform-state-ACCOUNT_ID"
+region         = "eu-central-1"
+dynamodb_table = "doculens-terraform-locks"
+encrypt        = true
+# Optional CMK for state objects (recommended):
+# kms_key_id   = "arn:aws:kms:eu-central-1:ACCOUNT_ID:key/..."

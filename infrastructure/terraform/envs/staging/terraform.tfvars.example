@@ -1,1 +1,18 @@
 aws_region = "eu-central-1"
+
+# ChromaDB hosting is still open (OQ-1). Point at a reachable server before apply, or
+# expect /health/ready to fail until CHROMA_URL is valid.
+chroma_url = "https://chroma.example.internal:8000"
+
+# Cost: staging keeps a single NAT and skips interface VPC endpoints by default.
+enable_interface_endpoints = false
+enable_vpc_flow_logs       = false
+
+# Optional: enable GitHub OIDC only in one environment per AWS account (usually production).
+# Staging defaults to false to avoid duplicate OIDC provider conflicts.
+create_github_oidc = false
+# github_repository  = "doculens/doculens"
+
+# Set after the first image push, e.g.:
+# api_image_uri    = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/doculens-staging-api@sha256:..."
+# worker_image_uri = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/doculens-staging-worker@sha256:..."

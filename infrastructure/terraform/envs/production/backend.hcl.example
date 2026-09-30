@@ -1,0 +1,12 @@
+# Example backend configuration (git-ignored when copied to backend.hcl).
+#
+# Use a distinct state key (already set in backend.tf) but typically the same
+# bucket and lock table as staging within one AWS account. Prefer SSE-KMS on the
+# state bucket and deny non-TLS access.
+
+bucket         = "doculens-terraform-state-ACCOUNT_ID"
+region         = "eu-central-1"
+dynamodb_table = "doculens-terraform-locks"
+encrypt        = true
+# Optional CMK for state objects (recommended):
+# kms_key_id   = "arn:aws:kms:eu-central-1:ACCOUNT_ID:key/..."

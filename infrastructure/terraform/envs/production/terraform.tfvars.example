@@ -1,1 +1,22 @@
 aws_region = "eu-central-1"
+
+vpc_cidr          = "10.30.0.0/16"
+az_count          = 3
+nat_gateway_count = 2
+
+enable_interface_endpoints = true
+enable_vpc_flow_logs       = true
+
+db_instance_class = "db.t4g.medium"
+redis_node_type   = "cache.t4g.small"
+
+# ChromaDB hosting is still open (OQ-1).
+chroma_url = "https://chroma.example.internal:8000"
+
+create_github_oidc = true
+github_repository  = "doculens/doculens"
+# github_oidc_subjects defaults to main branch + GitHub Environments.
+
+# Set after the first image push (digest-pinned preferred):
+# api_image_uri    = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/doculens-production-api@sha256:..."
+# worker_image_uri = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/doculens-production-worker@sha256:..."
