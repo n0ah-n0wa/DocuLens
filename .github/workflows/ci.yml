@@ -23,7 +23,10 @@ env:
   UV_FROZEN: "1" # uv.lock is authoritative; stale lockfiles fail instead of re-resolving
   TERRAFORM_VERSION: "1.16.3"
   TFLINT_VERSION: "v0.55.1"
-  TRIVY_VERSION: "v0.68.1"
+  # Post Aqua supply-chain incident: many historical release assets were deleted
+  # (setup-trivy finds the tag then fails downloading the binary). Pin a release
+  # that still publishes assets — see aquasecurity/trivy discussions #10265 / #10425.
+  TRIVY_VERSION: "v0.74.0"
   PIP_AUDIT_VERSION: "2.10.1"
   PYTHON_VERSION: "3.12"
   NEXT_TELEMETRY_DISABLED: "1"
