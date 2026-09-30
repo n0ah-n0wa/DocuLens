@@ -16,7 +16,7 @@ dependencies = [
     "opentelemetry-semantic-conventions==0.66b0",
     "pydantic==2.13.5",
     "pydantic-settings==2.15.0",
-    "pyjwt==2.14.0",
+    "pyjwt==2.15.0",
     "pymupdf==1.28.2",
     "redis==6.4.0",
     "sqlalchemy[asyncio]==2.0.54",

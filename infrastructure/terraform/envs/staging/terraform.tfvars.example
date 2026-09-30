@@ -6,7 +6,7 @@ chroma_url = "https://chroma.example.internal:8000"
 
 # Cost: staging keeps a single NAT and skips interface VPC endpoints by default.
 enable_interface_endpoints = false
-enable_vpc_flow_logs       = false
+enable_vpc_flow_logs       = true
 
 # Optional: enable GitHub OIDC only in one environment per AWS account (usually production).
 # Staging defaults to false to avoid duplicate OIDC provider conflicts.

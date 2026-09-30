@@ -28,9 +28,9 @@ variable "enable_interface_endpoints" {
 }
 
 variable "enable_vpc_flow_logs" {
-  description = "Enable VPC flow logs (optional in staging)."
+  description = "Enable VPC flow logs (recommended; modest CloudWatch cost)."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "db_instance_class" {

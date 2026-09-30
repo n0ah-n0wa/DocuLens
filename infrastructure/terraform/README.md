@@ -62,9 +62,8 @@ terraform plan -var-file=terraform.tfvars
 ```
 
 CI runs `terraform fmt -check -recursive` and, per environment,
-`terraform init -backend=false && terraform validate`. Lint with
-`tflint --config .tflint.hcl --chdir envs/staging` (and production) after
-`tflint --init`.
+`terraform init -backend=false && terraform validate`, plus `tflint` and a Trivy configuration
+scan of `infrastructure/terraform` (misconfigurations fail the job).
 
 ## Notes
 

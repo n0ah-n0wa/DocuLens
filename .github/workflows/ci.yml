@@ -1,6 +1,7 @@
-# Continuous integration (SPECIFICATIONS.md §59): every pull request and push to main must pass
-# formatting, lint, type checks, unit/API tests, frontend tests, builds, security checks and
-# infrastructure validation. Actions are pinned to commit SHAs; the comment records the tag.
+# Continuous integration (SPECIFICATIONS.md §59).
+# Actions are pinned to commit SHAs (tag in the trailing comment). Quality-gate steps
+# never use continue-on-error. AWS deploy stays out of this workflow — future CD must use
+# OIDC (`permissions.id-token: write` + the Terraform deploy role), never static keys (§5.5).
 name: CI
 
 on:
@@ -8,29 +9,53 @@ on:
   push:
     branches: [main]
 
+# Least privilege by default. Jobs that write caches/artifacts elevate `actions: write` only.
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  # Cancel superseding PR runs; keep main runs to completion for a stable merge signal.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   UV_VERSION: "0.12.17"
-  UV_FROZEN: "1" # every uv command uses uv.lock as-is; a stale lockfile fails instead of re-resolving
+  UV_FROZEN: "1" # uv.lock is authoritative; stale lockfiles fail instead of re-resolving
   TERRAFORM_VERSION: "1.16.3"
+  TFLINT_VERSION: "v0.55.1"
+  TRIVY_VERSION: "v0.68.1"
+  PIP_AUDIT_VERSION: "2.10.1"
+  PYTHON_VERSION: "3.12"
   NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
-  python:
-    name: Python · format, lint, types, tests
-    runs-on: ubuntu-latest
+  backend:
+    name: Backend · format, lint, types, unit, integration, build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write # uv cache + eval artifact
+    env:
+      COMPOSE_PROJECT_NAME: doculens-ci-backend-${{ github.run_id }}
+      # Throwaway local-compose credentials only (never production secrets).
+      DOCULENS_TEST_DATABASE_URL: postgresql+asyncpg://doculens:doculens-local-only@127.0.0.1:5432/doculens
+      DOCULENS_TEST_CHROMA_URL: http://127.0.0.1:8001
+      DOCULENS_TEST_S3_ENDPOINT_URL: http://127.0.0.1:9000
+      DOCULENS_TEST_S3_ACCESS_KEY_ID: doculens
+      DOCULENS_TEST_S3_SECRET_ACCESS_KEY: doculens-local-only
+      DOCULENS_TEST_S3_BUCKET: doculens-documents
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+            .python-version
       - name: Install workspace
         run: uv sync --frozen
       - name: Format check
@@ -39,26 +64,74 @@ jobs:
         run: uv run ruff check .
       - name: Type check
         run: uv run mypy
-      - name: Tests
-        run: uv run pytest
+      - name: Unit tests
+        # Docker-free fail-fast. Clear compose URLs so nothing hits a downed service.
+        env:
+          DOCULENS_TEST_DATABASE_URL: ""
+          DOCULENS_TEST_CHROMA_URL: ""
+          DOCULENS_TEST_S3_ENDPOINT_URL: ""
+        run: uv run pytest -m "not integration" --cov-fail-under=0 --cov-report=term-missing --cov-report=xml
+      - name: Start PostgreSQL, Redis, ChromaDB, MinIO
+        run: |
+          set -euo pipefail
+          docker compose --project-directory . -f docker/compose.yaml \
+            up --detach --wait --wait-timeout 120 postgres redis chroma minio
+          docker compose --project-directory . -f docker/compose.yaml run --rm minio-init
+      - name: Integration tests
+        run: uv run pytest -m integration --cov-append --cov-fail-under=0 --cov-report=term-missing --cov-report=xml
+      - name: Coverage gate
+        run: uv run coverage report --fail-under=90
+      - name: Build Python packages
+        run: |
+          set -euo pipefail
+          uv build --package doculens-core --out-dir dist
+          uv build --package doculens-api --out-dir dist
+          uv build --package doculens-worker --out-dir dist
+          test -n "$(find dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' \))"
       - name: RAG evaluation
         run: uv run python -m evals
       - name: Upload RAG evaluation results
-        if: always()
+        if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rag-eval-results
           path: docs/eval/latest.json
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload coverage on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-coverage
+          path: |
+            .coverage
+            coverage.xml
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Documentation links
         run: uv run python scripts/check_doc_links.py
+      - name: Dump compose logs on failure
+        if: failure()
+        run: |
+          set +e
+          docker compose --project-directory . -f docker/compose.yaml ps -a
+          docker compose --project-directory . -f docker/compose.yaml logs --no-color --tail=200
+      - name: Stop integration infrastructure
+        if: always()
+        run: docker compose --project-directory . -f docker/compose.yaml down --volumes
 
-  web:
-    name: Web · format, lint, types, unit, build, e2e
-    runs-on: ubuntu-latest
+  frontend:
+    name: Frontend · format, lint, types, unit, build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: write # pnpm + Playwright caches, Playwright report artifact
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.22.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
@@ -73,31 +146,51 @@ jobs:
         run: pnpm run typecheck
       - name: Unit tests
         run: pnpm run test:web
-      - name: Build
+      - name: Production build
         run: pnpm run build
+      - name: Cache Playwright browsers
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/web/package.json', 'pnpm-lock.yaml') }}
       - name: Install Playwright browsers
         run: pnpm --filter @doculens/web exec playwright install --with-deps chromium
-      - name: End-to-end tests
+      - name: End-to-end smoke tests
         run: pnpm run test:e2e
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-report
-          path: apps/web/playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: ignore
           retention-days: 7
 
-  e2e-critical:
-    name: Web · critical Playwright e2e
-    runs-on: ubuntu-latest
+  e2e_critical:
+    name: Frontend · critical Playwright e2e
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: write
+    env:
+      COMPOSE_PROJECT_NAME: doculens-ci-e2e-${{ github.run_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+            .python-version
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.22.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
@@ -110,16 +203,19 @@ jobs:
         run: uv run python scripts/write_critical_e2e_env.py
       - name: Start infrastructure
         run: |
-          docker compose --project-directory . -f docker/compose.yaml up --detach --wait postgres redis chroma
+          set -euo pipefail
+          docker compose --project-directory . -f docker/compose.yaml \
+            up --detach --wait --wait-timeout 120 postgres redis chroma
       - name: Apply database migrations
         run: uv run alembic -c packages/core/alembic.ini upgrade head
       - name: Start API
         run: |
+          set -euo pipefail
           mkdir -p .local/storage-e2e
           nohup uv run uvicorn doculens_api.main:create_app --factory --host 127.0.0.1 --port 8000 \
             > /tmp/doculens-api.log 2>&1 &
           echo $! > /tmp/doculens-api.pid
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8000/health/live >/dev/null; then
               echo "API is up"
               exit 0
@@ -131,44 +227,175 @@ jobs:
           exit 1
       - name: Start document worker
         run: |
+          set -euo pipefail
           nohup uv run python -m doculens_worker > /tmp/doculens-worker.log 2>&1 &
           echo $! > /tmp/doculens-worker.pid
+          # Worker has no HTTP probe; confirm the process stays alive briefly after boot.
+          sleep 2
+          if ! kill -0 "$(cat /tmp/doculens-worker.pid)" 2>/dev/null; then
+            echo "Worker exited during startup" >&2
+            cat /tmp/doculens-worker.log >&2 || true
+            exit 1
+          fi
       - name: Build web app for API
         env:
           NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:8000
-          NEXT_TELEMETRY_DISABLED: "1"
         run: pnpm run build
+      - name: Cache Playwright browsers
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/web/package.json', 'pnpm-lock.yaml') }}
       - name: Install Playwright browsers
         run: pnpm --filter @doculens/web exec playwright install --with-deps chromium
       - name: Critical end-to-end tests
         env:
           NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:8000
-          CI: "true"
         run: pnpm run test:e2e:critical
       - name: Upload critical Playwright report
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: playwright-report-critical
-          path: apps/web/playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: ignore
           retention-days: 7
       - name: Dump service logs on failure
         if: failure()
         run: |
+          set +e
           echo "===== API ====="
-          cat /tmp/doculens-api.log || true
+          cat /tmp/doculens-api.log
           echo "===== Worker ====="
-          cat /tmp/doculens-worker.log || true
+          cat /tmp/doculens-worker.log
+          echo "===== Compose ====="
+          docker compose --project-directory . -f docker/compose.yaml ps -a
+          docker compose --project-directory . -f docker/compose.yaml logs --no-color --tail=200
       - name: Stop services
         if: always()
         run: |
-          if [ -f /tmp/doculens-api.pid ]; then kill "$(cat /tmp/doculens-api.pid)" || true; fi
-          if [ -f /tmp/doculens-worker.pid ]; then kill "$(cat /tmp/doculens-worker.pid)" || true; fi
-          docker compose --project-directory . -f docker/compose.yaml down --volumes || true
+          set +e
+          if [ -f /tmp/doculens-api.pid ]; then kill "$(cat /tmp/doculens-api.pid)"; fi
+          if [ -f /tmp/doculens-worker.pid ]; then kill "$(cat /tmp/doculens-worker.pid)"; fi
+          docker compose --project-directory . -f docker/compose.yaml down --volumes
 
-  docker:
-    name: Docker · build and scan images
-    runs-on: ubuntu-latest
+  infrastructure:
+    name: Infrastructure · Terraform format, validate, lint, security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write # Terraform / tflint / Trivy caches
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [staging, production]
+    defaults:
+      run:
+        working-directory: infrastructure/terraform/envs/${{ matrix.environment }}
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform.d/plugin-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+      - name: Cache Terraform providers
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ hashFiles('infrastructure/terraform/envs/**/.terraform.lock.hcl') }}
+      - name: Cache TFLint plugins
+        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        with:
+          path: ~/.tflint.d/plugins
+          key: tflint-${{ runner.os }}-${{ env.TFLINT_VERSION }}-${{ hashFiles('infrastructure/terraform/.tflint.hcl') }}
+      - name: Create Terraform plugin cache directory
+        run: mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+        working-directory: ${{ github.workspace }}
+      - name: Format check
+        run: terraform fmt -check -recursive ../..
+      - name: Init (no backend)
+        run: terraform init -backend=false -input=false
+      - name: Validate
+        run: terraform validate
+      - name: TFLint
+        working-directory: infrastructure/terraform
+        run: |
+          set -euo pipefail
+          tflint --init --config "${GITHUB_WORKSPACE}/infrastructure/terraform/.tflint.hcl"
+          tflint --config "${GITHUB_WORKSPACE}/infrastructure/terraform/.tflint.hcl" \
+            --chdir "envs/${{ matrix.environment }}" \
+            --call-module-type=local
+      - name: Terraform security scan (Trivy config)
+        if: matrix.environment == 'staging'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: config
+          scan-ref: infrastructure/terraform
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH,MEDIUM
+          skip-dirs: infrastructure/terraform/envs/staging/.terraform,infrastructure/terraform/envs/production/.terraform
+          cache-dir: ${{ github.workspace }}/.cache/trivy
+
+  security:
+    name: Security · secrets and dependency audits
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+            .python-version
+      - name: Python dependency audit
+        run: |
+          set -euo pipefail
+          uv export --frozen --no-dev --all-packages --no-emit-workspace \
+            --format requirements-txt --output-file requirements-audit.txt
+          uvx "pip-audit==${PIP_AUDIT_VERSION}" --strict --requirement requirements-audit.txt
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      - name: npm dependency audit
+        run: pnpm audit --prod --audit-level moderate
+
+  containers:
+    name: Security · container build and scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: write # buildx GHA cache
     strategy:
       fail-fast: false
       matrix:
@@ -189,60 +416,49 @@ jobs:
       - name: Scan ${{ matrix.image }} image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: ${{ env.TRIVY_VERSION }}
           image-ref: doculens-${{ matrix.image }}:ci
           format: table
           exit-code: "1"
           ignore-unfixed: true
           severity: CRITICAL,HIGH,MEDIUM
+          cache-dir: ${{ github.workspace }}/.cache/trivy
 
-  security:
-    name: Security · secrets and dependency audits
-    runs-on: ubuntu-latest
+  ci:
+    name: CI · all gates
+    runs-on: ubuntu-24.04
+    if: always()
+    needs:
+      - backend
+      - frontend
+      - e2e_critical
+      - infrastructure
+      - security
+      - containers
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - name: Secret scan
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
-        with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: true
-      - name: Python dependency audit
+      - name: Require every gate to pass
         run: |
-          uv export --frozen --no-dev --all-packages --no-emit-workspace \
-            --format requirements-txt --output-file requirements-audit.txt
-          uvx pip-audit==2.10.1 --strict --requirement requirements-audit.txt
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-      - name: Install workspace
-        run: pnpm install --frozen-lockfile
-      - name: npm dependency audit
-        run: pnpm audit --prod --audit-level moderate
-
-  terraform:
-    name: Terraform · format and validate
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        environment: [staging, production]
-    defaults:
-      run:
-        working-directory: infrastructure/terraform/envs/${{ matrix.environment }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-      - name: Format check
-        run: terraform fmt -check -recursive ../..
-      - name: Init (no backend)
-        run: terraform init -backend=false -input=false
-      - name: Validate
-        run: terraform validate
+          set -euo pipefail
+          results='${{ join(needs.*.result, ',') }}'
+          {
+            echo "## CI gate results"
+            echo ""
+            echo "| Job | Result |"
+            echo "| --- | --- |"
+            echo "| backend | ${{ needs.backend.result }} |"
+            echo "| frontend | ${{ needs.frontend.result }} |"
+            echo "| e2e_critical | ${{ needs.e2e_critical.result }} |"
+            echo "| infrastructure | ${{ needs.infrastructure.result }} |"
+            echo "| security | ${{ needs.security.result }} |"
+            echo "| containers | ${{ needs.containers.result }} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "Gate results: ${results}"
+          case ",${results}," in
+            *,failure,*|*,cancelled,*|*,skipped,*)
+              echo "One or more required CI gates did not succeed." >&2
+              exit 1
+              ;;
+          esac
+          echo "All required CI gates succeeded."

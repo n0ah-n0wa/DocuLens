@@ -66,7 +66,7 @@ variable "interface_endpoint_services" {
 variable "enable_vpc_flow_logs" {
   description = "Ship VPC flow logs to CloudWatch (security visibility; modest cost)."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "flow_logs_retention_days" {
@@ -207,6 +207,7 @@ resource "aws_security_group" "lambda" {
   }
 }
 
+#trivy:ignore:AVD-AWS-0104 Lambda must reach AWS APIs and external HTTPS providers via NAT/endpoints.
 resource "aws_vpc_security_group_egress_rule" "lambda_https" {
   security_group_id = aws_security_group.lambda.id
   cidr_ipv4         = "0.0.0.0/0"

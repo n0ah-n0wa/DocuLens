@@ -82,6 +82,12 @@ variable "cloudwatch_logs_exports" {
   default     = ["postgresql", "upgrade"]
 }
 
+variable "iam_database_authentication_enabled" {
+  description = "Enable IAM database authentication (password auth remains available)."
+  type        = bool
+  default     = true
+}
+
 variable "database_name" {
   type    = string
   default = "doculens"
@@ -138,11 +144,12 @@ resource "aws_db_instance" "this" {
   password = random_password.master.result
   port     = 5432
 
-  db_subnet_group_name   = aws_db_subnet_group.this.name
-  vpc_security_group_ids = var.security_group_ids
-  parameter_group_name   = aws_db_parameter_group.this.name
-  publicly_accessible    = false
-  multi_az               = var.multi_az
+  db_subnet_group_name                = aws_db_subnet_group.this.name
+  vpc_security_group_ids              = var.security_group_ids
+  parameter_group_name                = aws_db_parameter_group.this.name
+  publicly_accessible                 = false
+  multi_az                            = var.multi_az
+  iam_database_authentication_enabled = var.iam_database_authentication_enabled
 
   backup_retention_period   = var.backup_retention_days
   deletion_protection       = var.deletion_protection

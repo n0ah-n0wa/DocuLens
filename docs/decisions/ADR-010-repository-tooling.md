@@ -23,7 +23,7 @@ reproducibly. It names the libraries but not the package managers or the workspa
 | Web quality      | ESLint (`eslint-config-next`), Prettier, `tsc --noEmit`                                                                                                                                           |
 | Web tests        | Playwright end-to-end; no unit-test runner until pure logic exists (OQ-20)                                                                                                                        |
 | Images           | Docker tags pinned to exact versions; uv binary copied from its pinned image                                                                                                                      |
-| Infrastructure   | Terraform `~> 1.16`, AWS provider exact; `fmt -check` and `validate` in CI                                                                                                                        |
+| Infrastructure   | Terraform `~> 1.16`, AWS provider exact; `fmt -check`, `validate`, `tflint`, and Trivy config in CI                                                                                               |
 | CI               | GitHub Actions pinned to commit SHAs; Dependabot for actions, uv, npm, docker, terraform                                                                                                          |
 | Task runner      | GNU make mirroring the CI commands                                                                                                                                                                |
 

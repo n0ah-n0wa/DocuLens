@@ -85,7 +85,7 @@ module "database" {
   instance_class        = var.db_instance_class
   multi_az              = false
   backup_retention_days = 3
-  deletion_protection   = false
+  deletion_protection   = true
   skip_final_snapshot   = true
   apply_immediately     = true
   tags                  = local.common_tags
