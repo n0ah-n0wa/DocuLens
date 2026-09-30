@@ -41,9 +41,9 @@ terraform init -backend-config=backend.hcl
 
 State keys:
 
-| Environment | State key |
-| ----------- | --------- |
-| staging     | `doculens/staging/terraform.tfstate` |
+| Environment | State key                               |
+| ----------- | --------------------------------------- |
+| staging     | `doculens/staging/terraform.tfstate`    |
 | production  | `doculens/production/terraform.tfstate` |
 
 Bootstrap the state bucket, DynamoDB lock table, and (once per account) GitHub OIDC provider
