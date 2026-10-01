@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from alembic import command
+from alembic.command import upgrade as alembic_upgrade
 from alembic.config import Config
 
 from doculens.infrastructure.config import CoreSettings, load_settings
@@ -36,6 +36,6 @@ def handler(event: dict[str, Any], context: object) -> dict[str, Any]:
     config = Config(str(ALEMBIC_INI))
     config.set_main_option("script_location", str(ALEMBIC_ROOT))
     config.set_main_option("doculens.database_url", settings.database_url.get_secret_value())
-    command.upgrade(config, "head")
+    alembic_upgrade(config, "head")
     logger.info("migrations applied to head")
     return {"status": "ok", "action": "upgrade", "revision": "head"}

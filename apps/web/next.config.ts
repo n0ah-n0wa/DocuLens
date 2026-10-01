@@ -8,9 +8,8 @@ import type { NextConfig } from "next";
  * Next.js runtime (inline scripts/styles) and the configured API origin only.
  */
 const configuredApi = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
-const apiBaseUrl = (configuredApi && configuredApi.length > 0
-  ? configuredApi
-  : "http://localhost:8000"
+const apiBaseUrl = (
+  configuredApi && configuredApi.length > 0 ? configuredApi : "http://localhost:8000"
 ).replace(/\/$/, "");
 
 /** Localhost and 127.0.0.1 are distinct CSP origins; allow both when targeting loopback. */

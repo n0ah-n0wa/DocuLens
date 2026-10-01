@@ -77,8 +77,8 @@ def test_migrate_handler_runs_alembic_upgrade(
     monkeypatch.setattr(migrate_handler, "load_settings", lambda *_a, **_k: _Settings())
     monkeypatch.setattr(migrate_handler, "Config", _Config)
     monkeypatch.setattr(
-        migrate_handler.command,
-        "upgrade",
+        migrate_handler,
+        "alembic_upgrade",
         lambda config, revision: upgrades.append(f"{config.path}:{revision}"),
     )
 

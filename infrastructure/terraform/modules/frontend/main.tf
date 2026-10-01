@@ -1,18 +1,25 @@
 # Static Next.js frontend — private S3 origin behind CloudFront (OQ-19 provisional, §5.4).
 # Secrets never land in this bucket; the SPA calls the API Gateway origin only.
+# CloudFront WAFv2 ACLs must live in us-east-1 (AWS requirement).
 
 terraform {
   required_version = "~> 1.16.0"
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = ">= 6.0.0, < 7.0.0"
+      source                = "hashicorp/aws"
+      version               = ">= 6.0.0, < 7.0.0"
+      configuration_aliases = [aws.us_east_1]
     }
   }
 }
 
 variable "name_prefix" {
   type = string
+}
+
+variable "kms_key_arn" {
+  description = "CMK for the static web bucket (SSE-KMS)."
+  type        = string
 }
 
 variable "price_class" {
@@ -43,6 +50,10 @@ locals {
 }
 
 data "aws_region" "current" {}
+
+data "aws_canonical_user_id" "current" {}
+
+data "aws_cloudfront_log_delivery_canonical_user_id" "current" {}
 
 resource "aws_s3_bucket" "web" {
   bucket_prefix = "${var.name_prefix}-web-"
@@ -77,9 +88,130 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "web" {
   bucket = aws_s3_bucket.web.id
   rule {
     apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = var.kms_key_arn
+    }
+    bucket_key_enabled = true
+  }
+}
+
+# CloudFront standard access logs require SSE-S3 (not SSE-KMS) and ACL grants.
+resource "aws_s3_bucket" "web_logs" {
+  bucket_prefix = "${var.name_prefix}-web-logs-"
+  force_destroy = var.force_destroy
+  tags          = merge(var.tags, { Name = "${var.name_prefix}-web-logs" })
+}
+
+resource "aws_s3_bucket_ownership_controls" "web_logs" {
+  bucket = aws_s3_bucket.web_logs.id
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_acl" "web_logs" {
+  depends_on = [aws_s3_bucket_ownership_controls.web_logs]
+  bucket     = aws_s3_bucket.web_logs.id
+
+  access_control_policy {
+    owner {
+      id = data.aws_canonical_user_id.current.id
+    }
+    grant {
+      grantee {
+        id   = data.aws_canonical_user_id.current.id
+        type = "CanonicalUser"
+      }
+      permission = "FULL_CONTROL"
+    }
+    grant {
+      grantee {
+        id   = data.aws_cloudfront_log_delivery_canonical_user_id.current.id
+        type = "CanonicalUser"
+      }
+      permission = "FULL_CONTROL"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "web_logs" {
+  bucket = aws_s3_bucket.web_logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "web_logs" {
+  bucket = aws_s3_bucket.web_logs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+#trivy:ignore:AVD-AWS-0132 CloudFront access-log destinations must use SSE-S3 (AES256), not CMK/SSE-KMS.
+resource "aws_s3_bucket_server_side_encryption_configuration" "web_logs" {
+  bucket = aws_s3_bucket.web_logs.id
+  rule {
+    apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
     }
   }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "web_logs" {
+  bucket = aws_s3_bucket.web_logs.id
+
+  rule {
+    id     = "expire-access-logs"
+    status = "Enabled"
+    filter {}
+    expiration {
+      days = 90
+    }
+  }
+}
+
+resource "aws_wafv2_web_acl" "web" {
+  provider = aws.us_east_1
+
+  name  = "${var.name_prefix}-web"
+  scope = "CLOUDFRONT"
+
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 1
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-common"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.name_prefix}-web"
+    sampled_requests_enabled   = true
+  }
+
+  tags = merge(var.tags, { Name = "${var.name_prefix}-web-waf" })
 }
 
 resource "aws_cloudfront_origin_access_control" "web" {
@@ -138,6 +270,7 @@ resource "aws_cloudfront_distribution" "web" {
   default_root_object = "index.html"
   price_class         = var.price_class
   wait_for_deployment = false
+  web_acl_id          = aws_wafv2_web_acl.web.arn
   tags                = merge(var.tags, { Name = "${var.name_prefix}-web-cdn" })
 
   origin {
@@ -161,6 +294,12 @@ resource "aws_cloudfront_distribution" "web" {
         forward = "none"
       }
     }
+  }
+
+  logging_config {
+    include_cookies = false
+    bucket          = aws_s3_bucket.web_logs.bucket_domain_name
+    prefix          = "cloudfront/"
   }
 
   # SPA-style fallback for client-side routes under static export.
@@ -255,4 +394,8 @@ output "distribution_domain_name" {
 output "frontend_url" {
   description = "HTTPS URL for the CloudFront distribution."
   value       = "https://${aws_cloudfront_distribution.web.domain_name}"
+}
+
+output "web_acl_arn" {
+  value = aws_wafv2_web_acl.web.arn
 }

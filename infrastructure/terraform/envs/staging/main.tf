@@ -10,6 +10,16 @@ provider "aws" {
   }
 }
 
+# CloudFront WAFv2 web ACLs must be created in us-east-1.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+
+  default_tags {
+    tags = local.common_tags
+  }
+}
+
 locals {
   project     = "doculens"
   environment = "staging"
@@ -166,7 +176,13 @@ module "vector_store" {
 module "frontend" {
   source = "../../modules/frontend"
 
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
   name_prefix   = local.name_prefix
+  kms_key_arn   = module.kms.key_arn
   force_destroy = true
   price_class   = "PriceClass_100"
   tags          = local.common_tags
