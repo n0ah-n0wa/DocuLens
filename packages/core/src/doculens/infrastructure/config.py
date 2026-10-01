@@ -679,7 +679,16 @@ class CoreSettings(BaseSettings):
 def load_settings[SettingsT: CoreSettings](
     settings_type: type[SettingsT], *, env_file: str | None = ".env"
 ) -> SettingsT:
-    """Build and validate settings from the environment, failing loudly on invalid values."""
+    """Build and validate settings from the environment, failing loudly on invalid values.
+
+    When ``APP_SECRETS_ARN`` is set (deployed Lambdas), secrets are hydrated from
+    Secrets Manager into the process environment before validation.
+    """
+    from doculens.infrastructure.secrets import (  # noqa: PLC0415 - avoid import cycle at module load
+        hydrate_secrets_into_environ,
+    )
+
+    hydrate_secrets_into_environ()
     try:
         return settings_type(_env_file=env_file)
     except ValidationError as exc:

@@ -91,5 +91,8 @@ STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \
     CMD ["python", "-c", "import os; os.kill(1, 0)"]
 
+# Local/dev CMD is the long-poll worker. Lambda overrides image_config to:
+#   entry_point = ["/opt/venv/bin/python", "-m", "awslambdaric"]
+#   command     = ["doculens_worker.lambda_handler.handler"]
 # Settings and secrets are injected at runtime (env / Secrets Manager); nothing secret is baked in.
 CMD ["python", "-m", "doculens_worker"]

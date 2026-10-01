@@ -85,20 +85,32 @@ variable "cors_allow_origins" {
   default     = []
 }
 
-variable "create_github_oidc" {
-  description = "Create GitHub Actions OIDC provider + deploy role."
+variable "create_github_oidc_provider" {
+  description = "Create the account-level GitHub OIDC provider. Keep false in staging when production (or a bootstrap) already created it."
   type        = bool
   default     = false
 }
 
+variable "create_github_deploy_role" {
+  description = "Create the staging-only GitHub Actions deploy role (OIDC, §5.5)."
+  type        = bool
+  default     = true
+}
+
 variable "github_repository" {
-  description = "GitHub org/repo allowed to assume the deploy role (e.g. doculens/doculens)."
+  description = "GitHub org/repo allowed to assume the staging deploy role (e.g. n0ah-n0wa/DocuLens)."
+  type        = string
+  default     = ""
+}
+
+variable "github_oidc_provider_arn" {
+  description = "ARN of an existing GitHub OIDC provider when create_github_oidc_provider is false. Empty looks up token.actions.githubusercontent.com."
   type        = string
   default     = ""
 }
 
 variable "github_oidc_subjects" {
-  description = "Override OIDC sub patterns (empty uses main branch + environments)."
+  description = "Override OIDC sub patterns. Empty defaults to repo:ORG/REPO:environment:staging only."
   type        = list(string)
   default     = []
 }
@@ -108,6 +120,18 @@ variable "extra_secret_values" {
   type        = map(string)
   default     = {}
   sensitive   = true
+}
+
+variable "llm_provider" {
+  description = "LLM_PROVIDER for deployed API/worker (must not be fake)."
+  type        = string
+  default     = "openai"
+}
+
+variable "embedding_provider" {
+  description = "EMBEDDING_PROVIDER for deployed API/worker (must not be fake)."
+  type        = string
+  default     = "openai"
 }
 
 variable "alarm_actions" {

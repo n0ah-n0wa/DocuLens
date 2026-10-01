@@ -1,9 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const port = 3000;
-const baseURL = `http://127.0.0.1:${port}`;
+const localURL = `http://127.0.0.1:${port}`;
+const remoteURL = process.env.PLAYWRIGHT_BASE_URL?.replace(/\/$/, "");
+const baseURL = remoteURL || localURL;
 
-// Run `pnpm build` before e2e: the web server below serves the production build.
+// Run `pnpm build` before local e2e: the webServer below serves the production build.
+// Against a deployed origin set PLAYWRIGHT_BASE_URL (skips webServer).
 // Default CI/local: `--project=smoke`. Full stack: `--project=critical` (see test:e2e:critical).
 export default defineConfig({
   testDir: "./e2e",
@@ -28,10 +31,14 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  webServer: {
-    command: `pnpm exec next start --port ${port}`,
-    url: baseURL,
-    reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
-  },
+  ...(remoteURL
+    ? {}
+    : {
+        webServer: {
+          command: `pnpm exec next start --port ${port}`,
+          url: localURL,
+          reuseExistingServer: !process.env.CI,
+          timeout: 60_000,
+        },
+      }),
 });

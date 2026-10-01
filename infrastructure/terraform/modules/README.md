@@ -12,7 +12,8 @@ Reusable modules for staging and production (SPECIFICATIONS.md §57–§58).
 | `cache`         | ElastiCache Redis (AUTH, TLS, encryption at rest)                              |
 | `queue`         | SQS processing queue + DLQ (KMS)                                               |
 | `secrets`       | Secrets Manager app bundle (generated JWT / DB / Redis; optional extras)       |
-| `iam`           | Least-privilege roles for API, worker, migrate; optional GitHub OIDC deploy    |
+| `iam`           | Least-privilege Lambda roles + GitHub OIDC IdP / per-env deploy role           |
+| `frontend`      | S3 + CloudFront static Next.js hosting (OQ-19 provisional)                     |
 | `compute`       | Container-image Lambdas (API, SQS worker, migrations) in the VPC               |
 | `api-gateway`   | HTTP API (`$default` → Lambda proxy) with access logs and throttling           |
 | `observability` | Encrypted CloudWatch log groups and error/DLQ alarms                           |

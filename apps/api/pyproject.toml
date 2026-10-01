@@ -5,7 +5,9 @@ description = "DocuLens HTTP API: the FastAPI interface layer over doculens-core
 requires-python = ">=3.12"
 dependencies = [
   "doculens-core",
+  "awslambdaric==3.1.1",
   "fastapi==0.141.1",
+  "mangum==0.19.0",
   "opentelemetry-instrumentation-fastapi==0.66b0",
   "pydantic==2.13.5",
   "python-multipart==0.0.32",

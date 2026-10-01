@@ -20,7 +20,8 @@ infrastructure/terraform/
 │   ├── cache/         # ElastiCache Redis
 │   ├── queue/          # SQS + DLQ (document processing)
 │   ├── secrets/       # Secrets Manager (generated JWT/DB/Redis; no hardcoded secrets)
-│   ├── iam/           # least-privilege Lambda + optional GitHub OIDC deploy role
+│   ├── frontend/      # S3 + CloudFront static web (OQ-19 provisional)
+│   ├── iam/           # least-privilege Lambda + GitHub OIDC deploy role
 │   ├── compute/       # API / worker / migrate Lambdas
 │   ├── api-gateway/   # HTTP API in front of the API Lambda
 │   ├── observability/ # CloudWatch log groups and alarms
@@ -46,8 +47,9 @@ State keys:
 | staging     | `doculens/staging/terraform.tfstate`    |
 | production  | `doculens/production/terraform.tfstate` |
 
-Bootstrap the state bucket, DynamoDB lock table, and (once per account) GitHub OIDC provider
-manually before the first apply. See `backend.hcl.example`.
+Bootstrap the state bucket and DynamoDB lock table manually before the first apply. The GitHub
+Actions OIDC provider is created by Terraform when `create_github_oidc_provider = true` (see
+[`docs/deployment.md`](../../docs/deployment.md)). See `backend.hcl.example`.
 
 ## Working with an environment
 
@@ -75,8 +77,12 @@ scan of `infrastructure/terraform` (misconfigurations fail the job).
   hydrate `JWT_SECRET` / `DATABASE_URL` / `REDIS_URL` from that secret at cold start.
 - **ChromaDB (OQ-1):** `vector-store` does not provision a server; set `chroma_url` to an
   external endpoint (or leave readiness failing until hosting is decided).
-- **GitHub OIDC:** create the identity provider in at most one environment per AWS account
-  (production by default). Staging leaves `create_github_oidc = false`. Subject claims
-  default to `main` and GitHub Environments (not `repo:*`).
+- **GitHub OIDC (§5.5):** one account-level IdP (`create_github_oidc_provider`, usually production)
+  plus a **dedicated deploy role per environment**. Trust is
+  `repo:<org>/<repo>:environment:<staging|production>` only — no branch wildcards and no
+  `environment:*`. Staging looks up the existing IdP (`create_github_oidc_provider = false`).
+  Configure GitHub Environments and `AWS_DEPLOY_ROLE_ARN` as described in
+  [`docs/deployment.md`](../../docs/deployment.md). Validate with
+  `uv run python scripts/validate_github_oidc.py`.
 - **Cost knobs:** staging disables interface VPC endpoints by default; production uses
   2 NAT gateways (not 3) and caps worker SQS concurrency.

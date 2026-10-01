@@ -125,16 +125,23 @@ module "secrets" {
 module "iam" {
   source = "../../modules/iam"
 
-  name_prefix          = local.name_prefix
-  documents_bucket_arn = module.storage.bucket_arn
-  sqs_queue_arn        = module.queue.queue_arn
-  sqs_dlq_arn          = module.queue.dlq_arn
-  secrets_arns         = local.secrets_arns
-  kms_key_arn          = module.kms.key_arn
-  create_github_oidc   = var.create_github_oidc
-  github_repository    = var.github_repository
-  github_oidc_subjects = var.github_oidc_subjects
-  tags                 = local.common_tags
+  name_prefix                 = local.name_prefix
+  documents_bucket_arn        = module.storage.bucket_arn
+  sqs_queue_arn               = module.queue.queue_arn
+  sqs_dlq_arn                 = module.queue.dlq_arn
+  secrets_arns                = local.secrets_arns
+  kms_key_arn                 = module.kms.key_arn
+  create_github_oidc_provider = var.create_github_oidc_provider
+  create_github_deploy_role   = var.create_github_deploy_role && var.github_repository != ""
+  github_repository           = var.github_repository
+  github_deploy_environment   = local.environment
+  github_oidc_provider_arn    = var.github_oidc_provider_arn
+  github_oidc_subjects        = var.github_oidc_subjects
+  ecr_repository_arns = [
+    module.ecr.api_repository_arn,
+    module.ecr.worker_repository_arn,
+  ]
+  tags = local.common_tags
 }
 
 module "observability" {
@@ -157,6 +164,15 @@ module "vector_store" {
   security_group_id           = module.networking.vector_store_security_group_id
   chroma_url                  = var.chroma_url
   chroma_api_token_secret_arn = var.chroma_api_token_secret_arn
+}
+
+module "frontend" {
+  source = "../../modules/frontend"
+
+  name_prefix   = local.name_prefix
+  force_destroy = false
+  price_class   = "PriceClass_100"
+  tags          = local.common_tags
 }
 
 module "compute" {
@@ -197,6 +213,9 @@ module "compute" {
       RATE_LIMIT_BACKEND            = "redis"
       VECTOR_STORE                  = "chroma"
       CHROMA_URL                    = var.chroma_url
+      LLM_PROVIDER                  = var.llm_provider
+      EMBEDDING_PROVIDER            = var.embedding_provider
+      RERANKER_PROVIDER             = "none"
     },
     var.chroma_api_token_secret_arn != "" ? {
       CHROMA_API_TOKEN_SECRET_ARN = var.chroma_api_token_secret_arn
@@ -215,7 +234,9 @@ module "api_gateway" {
   lambda_invoke_arn    = module.compute.api_invoke_arn
   lambda_function_name = module.compute.api_function_name
   access_log_group_arn = module.observability.api_gateway_log_group_arn
-  cors_allow_origins   = var.cors_allow_origins
+  cors_allow_origins = length(var.cors_allow_origins) > 0 ? var.cors_allow_origins : [
+    module.frontend.frontend_url,
+  ]
   throttle_burst_limit = var.api_throttle_burst_limit
   throttle_rate_limit  = var.api_throttle_rate_limit
   tags                 = local.common_tags

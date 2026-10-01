@@ -5,6 +5,7 @@ description = "DocuLens document-processing worker: the queue-driven interface l
 requires-python = ">=3.12"
 dependencies = [
   "doculens-core",
+  "awslambdaric==3.1.1",
 ]
 
 [project.scripts]

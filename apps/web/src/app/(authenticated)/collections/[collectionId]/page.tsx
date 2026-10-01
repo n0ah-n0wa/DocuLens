@@ -1,10 +1,9 @@
-import type { Metadata } from "next";
-
 import { CollectionDetailPage } from "@/components/collections/collection-detail";
 
-export const metadata: Metadata = {
-  title: "Collection · DocuLens",
-};
+/** Placeholder path so `output: "export"` emits at least one HTML shell. */
+export function generateStaticParams(): { collectionId: string }[] {
+  return [{ collectionId: "_" }];
+}
 
 export default async function CollectionPage({
   params,

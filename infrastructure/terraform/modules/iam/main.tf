@@ -36,20 +36,68 @@ variable "kms_key_arn" {
   type = string
 }
 
-variable "create_github_oidc" {
-  description = "Create GitHub Actions OIDC provider and deploy role (§5.5)."
+variable "create_github_oidc_provider" {
+  description = "Create the account-level GitHub Actions OIDC identity provider (§5.5). At most one per AWS account."
   type        = bool
-  default     = true
+  default     = false
+}
+
+variable "create_github_deploy_role" {
+  description = "Create this environment's dedicated GitHub Actions deploy role (§5.5, §58)."
+  type        = bool
+  default     = false
 }
 
 variable "github_repository" {
-  description = "org/repo allowed to assume the deploy role via OIDC."
+  description = "org/repo allowed to assume the deploy role via OIDC (e.g. n0ah-n0wa/DocuLens)."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_repository == "" || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repository))
+    error_message = "github_repository must be empty or look like org/repo."
+  }
+}
+
+variable "github_deploy_environment" {
+  description = "GitHub Environment name that may assume this deploy role (staging | production). Required when create_github_deploy_role is true."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.github_deploy_environment == "" || contains(["staging", "production"], var.github_deploy_environment)
+    error_message = "github_deploy_environment must be empty, \"staging\", or \"production\"."
+  }
+}
+
+variable "github_oidc_subjects" {
+  description = "Override token.actions.githubusercontent.com:sub patterns. Empty defaults to repo:ORG/REPO:environment:ENV only (no branch wildcards)."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for s in var.github_oidc_subjects :
+      length(regexall("\\*", s)) == 0
+    ])
+    error_message = "github_oidc_subjects must not contain wildcards (*); pin exact repository and environment subjects."
+  }
+}
+
+variable "github_oidc_provider_arn" {
+  description = "Existing GitHub OIDC provider ARN when create_github_oidc_provider is false. Empty looks up token.actions.githubusercontent.com in-account."
   type        = string
   default     = ""
 }
 
-variable "github_oidc_subjects" {
-  description = "Allowed token.actions.githubusercontent.com:sub patterns (least privilege)."
+variable "ecr_repository_arns" {
+  description = "ECR repository ARNs this deploy role may push to (environment-scoped)."
+  type        = list(string)
+  default     = []
+}
+
+variable "lambda_function_arns" {
+  description = "Lambda function ARNs this deploy role may update (environment-scoped)."
   type        = list(string)
   default     = []
 }
@@ -63,6 +111,11 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 data "aws_region" "current" {}
 
+data "aws_iam_openid_connect_provider" "github" {
+  count = var.create_github_deploy_role && !var.create_github_oidc_provider && var.github_oidc_provider_arn == "" ? 1 : 0
+  url   = "https://token.actions.githubusercontent.com"
+}
+
 locals {
   lambda_assume = jsonencode({
     Version = "2012-10-17"
@@ -75,10 +128,44 @@ locals {
     }]
   })
 
+  # Least privilege: only the named GitHub Environment for this Terraform env may assume.
+  # Branch refs (refs/heads/*) and environment:* wildcards are intentionally excluded.
   github_subjects = length(var.github_oidc_subjects) > 0 ? var.github_oidc_subjects : [
-    "repo:${var.github_repository}:ref:refs/heads/main",
-    "repo:${var.github_repository}:environment:*",
+    "repo:${var.github_repository}:environment:${var.github_deploy_environment}",
   ]
+
+  github_oidc_provider_arn = (
+    var.create_github_oidc_provider
+    ? aws_iam_openid_connect_provider.github[0].arn
+    : (
+      var.github_oidc_provider_arn != ""
+      ? var.github_oidc_provider_arn
+      : try(data.aws_iam_openid_connect_provider.github[0].arn, null)
+    )
+  )
+
+  # Function/repo names are deterministic (${name_prefix}-*); compute is applied after IAM, so
+  # ARNs are composed here unless the caller passes explicit lists.
+  default_ecr_repository_arns = [
+    "arn:${data.aws_partition.current.partition}:ecr:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:repository/${var.name_prefix}-api",
+    "arn:${data.aws_partition.current.partition}:ecr:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:repository/${var.name_prefix}-worker",
+  ]
+  default_lambda_function_arns = [
+    "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.name_prefix}-api",
+    "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.name_prefix}-worker",
+    "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.name_prefix}-migrate",
+  ]
+  deploy_ecr_repository_arns  = length(var.ecr_repository_arns) > 0 ? var.ecr_repository_arns : local.default_ecr_repository_arns
+  deploy_lambda_function_arns = length(var.lambda_function_arns) > 0 ? var.lambda_function_arns : local.default_lambda_function_arns
+}
+
+check "github_deploy_role_inputs" {
+  assert {
+    condition = !var.create_github_deploy_role || (
+      var.github_repository != "" && var.github_deploy_environment != ""
+    )
+    error_message = "create_github_deploy_role requires github_repository and github_deploy_environment."
+  }
 }
 
 resource "aws_iam_role" "api" {
@@ -260,10 +347,11 @@ resource "aws_iam_role_policy" "migrate" {
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
-  count = var.create_github_oidc ? 1 : 0
+  count = var.create_github_oidc_provider ? 1 : 0
 
   url            = "https://token.actions.githubusercontent.com"
   client_id_list = ["sts.amazonaws.com"]
+  # GitHub documents these intermediate CA thumbprints; AWS still requires the list on the IdP.
   thumbprint_list = [
     "6938fd4d98bab03faadb97b34396831e3780aea1",
     "1c58a3a8518e8759bf075b76b750d4f2df264fcd",
@@ -273,17 +361,20 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 resource "aws_iam_role" "deploy" {
-  count = var.create_github_oidc && var.github_repository != "" ? 1 : 0
+  count = var.create_github_deploy_role ? 1 : 0
 
-  name_prefix = "${var.name_prefix}-deploy-"
-  tags        = merge(var.tags, { Name = "${var.name_prefix}-deploy-role" })
+  name_prefix          = "${var.name_prefix}-deploy-"
+  description          = "GitHub Actions OIDC deploy role for ${var.github_deploy_environment} (${var.github_repository})."
+  max_session_duration = 3600
+  tags                 = merge(var.tags, { Name = "${var.name_prefix}-deploy-role" })
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
+      Sid    = "GitHubActionsOidc"
       Effect = "Allow"
       Principal = {
-        Federated = aws_iam_openid_connect_provider.github[0].arn
+        Federated = local.github_oidc_provider_arn
       }
       Action = "sts:AssumeRoleWithWebIdentity"
       Condition = {
@@ -291,6 +382,7 @@ resource "aws_iam_role" "deploy" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
+          # Exact subjects only (see local.github_subjects); never environment:* or refs/heads/*.
           "token.actions.githubusercontent.com:sub" = local.github_subjects
         }
       }
@@ -311,41 +403,127 @@ resource "aws_iam_role_policy" "deploy" {
         Sid      = "ECRPushAuth"
         Effect   = "Allow"
         Action   = ["ecr:GetAuthorizationToken"]
-        Resource = ["*"]
+        Resource = ["*"] # GetAuthorizationToken cannot be resource-scoped
       },
       {
         Sid    = "ECRRepo"
         Effect = "Allow"
         Action = [
           "ecr:BatchCheckLayerAvailability",
+          "ecr:BatchGetImage",
           "ecr:CompleteLayerUpload",
+          "ecr:DescribeImages",
+          "ecr:DescribeRepositories",
+          "ecr:GetDownloadUrlForLayer",
           "ecr:InitiateLayerUpload",
           "ecr:PutImage",
           "ecr:UploadLayerPart",
-          "ecr:BatchGetImage",
-          "ecr:DescribeImages",
-          "ecr:DescribeRepositories",
         ]
-        Resource = [
-          "arn:${data.aws_partition.current.partition}:ecr:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:repository/${var.name_prefix}-api",
-          "arn:${data.aws_partition.current.partition}:ecr:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:repository/${var.name_prefix}-worker",
+        Resource = local.deploy_ecr_repository_arns
+      },
+      {
+        Sid    = "EcrKms"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey",
+          "kms:Encrypt",
+          "kms:GenerateDataKey",
         ]
+        Resource = [var.kms_key_arn]
       },
       {
         Sid    = "LambdaUpdate"
         Effect = "Allow"
         Action = [
-          "lambda:UpdateFunctionCode",
-          "lambda:UpdateFunctionConfiguration",
           "lambda:GetFunction",
           "lambda:GetFunctionConfiguration",
+          "lambda:UpdateFunctionCode",
+          "lambda:UpdateFunctionConfiguration",
           "lambda:PublishVersion",
           "lambda:InvokeFunction",
         ]
+        Resource = local.deploy_lambda_function_arns
+      },
+      {
+        # Staging CD runs terraform plan/apply and syncs the static frontend.
+        # Assumable only via environment-scoped OIDC (ADR-022). Secrets are never
+        # committed to Git. IAM mutations and Secrets Manager are limited to this
+        # environment's name prefix to reduce shared-account blast radius.
+        Sid    = "TerraformAndFrontendDeploy"
+        Effect = "Allow"
+        Action = [
+          "apigateway:*",
+          "cloudfront:*",
+          "dynamodb:*",
+          "ec2:*",
+          "ecr:*",
+          "elasticache:*",
+          "kms:*",
+          "lambda:*",
+          "logs:*",
+          "rds:*",
+          "s3:*",
+          "sqs:*",
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+        ]
+        Resource = ["*"]
+      },
+      {
+        Sid    = "DeployIamRead"
+        Effect = "Allow"
+        Action = [
+          "iam:GetRole",
+          "iam:GetRolePolicy",
+          "iam:GetOpenIDConnectProvider",
+          "iam:ListRolePolicies",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListInstanceProfilesForRole",
+          "iam:GetPolicy",
+          "iam:GetPolicyVersion",
+          "iam:ListPolicyVersions",
+        ]
+        Resource = ["*"]
+      },
+      {
+        Sid    = "DeployIamMutatePrefixedRoles"
+        Effect = "Allow"
+        Action = [
+          "iam:CreateRole",
+          "iam:DeleteRole",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy",
+          "iam:TagRole",
+          "iam:UntagRole",
+          "iam:UpdateAssumeRolePolicy",
+          "iam:PassRole",
+        ]
         Resource = [
-          "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.name_prefix}-api",
-          "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.name_prefix}-worker",
-          "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.name_prefix}-migrate",
+          "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-*",
+        ]
+      },
+      {
+        Sid    = "DeploySecretsManagerPrefixed"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:TagResource",
+          "secretsmanager:UntagResource",
+          "secretsmanager:GetResourcePolicy",
+          "secretsmanager:PutResourcePolicy",
+          "secretsmanager:DeleteResourcePolicy",
+          "secretsmanager:ListSecretVersionIds",
+        ]
+        Resource = [
+          "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:${var.name_prefix}-*",
         ]
       }
     ]
@@ -368,7 +546,22 @@ output "migrate_role_arn" {
   value = aws_iam_role.migrate.arn
 }
 
+output "github_oidc_provider_arn" {
+  description = "GitHub OIDC provider ARN used by the deploy role (null when unused)."
+  value       = var.create_github_deploy_role || var.create_github_oidc_provider ? local.github_oidc_provider_arn : null
+}
+
 output "deploy_role_arn" {
-  description = "GitHub Actions deploy role ARN (null when OIDC is disabled)."
+  description = "GitHub Actions deploy role ARN (null when the role is not created)."
   value       = try(aws_iam_role.deploy[0].arn, null)
+}
+
+output "deploy_role_name" {
+  description = "GitHub Actions deploy role name (null when the role is not created)."
+  value       = try(aws_iam_role.deploy[0].name, null)
+}
+
+output "github_oidc_subjects" {
+  description = "Effective OIDC sub claim patterns bound to the deploy role."
+  value       = var.create_github_deploy_role ? local.github_subjects : []
 }

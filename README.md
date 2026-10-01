@@ -120,9 +120,10 @@ locally and in AWS Secrets Manager in deployed environments (SPECIFICATIONS.md Â
 
 ## Deployment
 
-Not yet available. The Terraform environment roots and the CI pipeline exist; AWS resources,
-the CD workflow and the deployment guide are delivered in the infrastructure phase after the
-hosting decisions in [docs/planning/open-questions.md](docs/planning/open-questions.md).
+AWS authentication for CD uses GitHub Actions OIDC only (no long-lived access keys). See
+[`docs/deployment.md`](docs/deployment.md) and [ADR-022](docs/decisions/ADR-022-github-actions-oidc.md).
+Terraform still provisions the remaining AWS resources when hosting open questions are closed
+([docs/planning/open-questions.md](docs/planning/open-questions.md)).
 
 ## Security
 

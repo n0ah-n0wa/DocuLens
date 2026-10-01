@@ -1,16 +1,20 @@
-import type { Metadata } from "next";
+"use client";
+
+import { useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 
 import { UploadDocumentForm } from "@/components/documents/upload-document-form";
+import { LoadingState } from "@/components/ui/query-state";
 
-export const metadata: Metadata = {
-  title: "Upload · DocuLens",
-};
+function UploadDocumentPageInner() {
+  const searchParams = useSearchParams();
+  return <UploadDocumentForm initialCollectionId={searchParams.get("collection_id") ?? ""} />;
+}
 
-export default async function UploadDocumentPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ collection_id?: string }>;
-}) {
-  const params = await searchParams;
-  return <UploadDocumentForm initialCollectionId={params.collection_id ?? ""} />;
+export default function UploadDocumentPage() {
+  return (
+    <Suspense fallback={<LoadingState label="Loading upload form" />}>
+      <UploadDocumentPageInner />
+    </Suspense>
+  );
 }

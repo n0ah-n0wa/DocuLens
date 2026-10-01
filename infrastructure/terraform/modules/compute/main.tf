@@ -138,6 +138,9 @@ locals {
     },
     var.environment_variables,
   )
+
+  # Custom Python images need the Runtime Interface Client as entrypoint (OQ-2 provisional).
+  lambda_entry_point = ["/opt/venv/bin/python", "-m", "awslambdaric"]
 }
 
 resource "aws_lambda_function" "api" {
@@ -149,6 +152,11 @@ resource "aws_lambda_function" "api" {
   timeout                        = var.api_timeout_seconds
   architectures                  = ["x86_64"]
   reserved_concurrent_executions = var.api_reserved_concurrency
+
+  image_config {
+    entry_point = local.lambda_entry_point
+    command     = ["doculens_api.lambda_handler.handler"]
+  }
 
   environment {
     variables = local.common_env
@@ -174,6 +182,11 @@ resource "aws_lambda_function" "worker" {
   memory_size   = var.worker_memory_mb
   timeout       = var.worker_timeout_seconds
   architectures = ["x86_64"]
+
+  image_config {
+    entry_point = local.lambda_entry_point
+    command     = ["doculens_worker.lambda_handler.handler"]
+  }
 
   environment {
     variables = local.common_env
@@ -213,6 +226,11 @@ resource "aws_lambda_function" "migrate" {
   memory_size   = 512
   timeout       = 300
   architectures = ["x86_64"]
+
+  image_config {
+    entry_point = local.lambda_entry_point
+    command     = ["doculens_api.migrate_handler.handler"]
+  }
 
   environment {
     variables = local.common_env

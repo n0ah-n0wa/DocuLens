@@ -1,13 +1,20 @@
-import { describe, expect, it } from "vitest";
-
-import nextConfig from "../../next.config";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("next.config security headers", () => {
-  it("disables the powered-by header", () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    Reflect.deleteProperty(process.env, "DOCULENS_STATIC_EXPORT");
+    Reflect.deleteProperty(process.env, "NEXT_PUBLIC_API_BASE_URL");
+    vi.resetModules();
+  });
+
+  it("disables the powered-by header", async () => {
+    const { default: nextConfig } = await import("../../next.config");
     expect(nextConfig.poweredByHeader).toBe(false);
   });
 
   it("sets CSP, framing, and content-type protections for every path", async () => {
+    const { default: nextConfig } = await import("../../next.config");
     const headersFn = nextConfig.headers;
     expect(headersFn).toBeTypeOf("function");
     const entries = await headersFn!();
@@ -27,5 +34,13 @@ describe("next.config security headers", () => {
     // Loopback aliases are both allowed so CI (127.0.0.1) and local (localhost) stay aligned.
     expect(headers["Content-Security-Policy"]).toContain("http://localhost:8000");
     expect(headers["Content-Security-Policy"]).toContain("http://127.0.0.1:8000");
+  });
+
+  it("omits next.config headers under static export (CloudFront supplies them)", async () => {
+    vi.stubEnv("DOCULENS_STATIC_EXPORT", "1");
+    vi.resetModules();
+    const { default: nextConfig } = await import("../../next.config");
+    expect(nextConfig.output).toBe("export");
+    expect(nextConfig.headers).toBeUndefined();
   });
 });

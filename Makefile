@@ -6,7 +6,8 @@ COMPOSE := docker compose --project-directory . -f docker/compose.yaml
 
 .PHONY: help bootstrap format format-check lint typecheck test test-e2e test-e2e-critical eval build docs-check check \
         check-ci db-upgrade db-downgrade db-revision docker-build docker-verify infra-up infra-down infra-logs \
-        terraform-fmt terraform-validate terraform-lint terraform-check clean
+        terraform-fmt terraform-validate terraform-lint terraform-check \
+        cd-plan-staging cd-deploy-staging cd-smoke-staging clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -97,6 +98,15 @@ terraform-lint: ## Run tflint against staging and production roots
 	cd infrastructure/terraform && tflint --config .tflint.hcl --chdir envs/production --call-module-type=local
 
 terraform-check: terraform-fmt terraform-validate terraform-lint ## Terraform format, validate, and lint
+
+cd-plan-staging: ## Terraform plan for staging (requires AWS OIDC/SSO + TF_STATE_* env vars)
+	./scripts/cd/plan_staging.sh
+
+cd-deploy-staging: ## Deploy staging (backend, worker, frontend, infra); see docs/deployment.md
+	./scripts/cd/deploy_staging.sh
+
+cd-smoke-staging: ## Functional staging smoke (creates + deletes its own fixture data)
+	./scripts/cd/smoke_staging.sh
 
 clean: ## Remove build artefacts and caches
 	rm -rf .venv .mypy_cache .pytest_cache .ruff_cache apps/web/.next apps/web/playwright-report apps/web/test-results dist

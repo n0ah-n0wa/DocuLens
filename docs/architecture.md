@@ -64,10 +64,11 @@ Principles the specification fixes (§1, §4, §90):
 The layout adapts §71 as recorded in [ADR-001](decisions/ADR-001-backend-architecture.md): the
 framework-free core is its own package so that packaging itself enforces the §72 boundary.
 
-**Planned** components not yet present: the CD pipeline (§60), production smoke tests, and the
-Terraform modules (§57). The RAG evaluation harness lives under `evals/` (§62–§63) and runs
-deterministically in CI via `make eval` / `uv run python -m evals`, writing machine-readable
-results to `docs/eval/latest.json`. Methodology and limitations:
+**Planned** components not yet present: full production CD beyond OIDC auth, and remaining hosting
+open questions (`OQ-1`, `OQ-2`). Staging CD is implemented ([`deployment.md`](deployment.md)).
+Terraform modules (§57) live under `infrastructure/terraform/`. The RAG evaluation harness lives
+under `evals/` (§62–§63) and runs deterministically in CI via `make eval` / `uv run python -m evals`,
+writing machine-readable results to `docs/eval/latest.json`. Methodology and limitations:
 [`docs/eval/methodology.md`](eval/methodology.md).
 
 ---
@@ -637,7 +638,9 @@ flowchart TB
   monitoring; no unnecessary wildcards (§58).
 - Secrets live in AWS Secrets Manager and are read at start-up; nothing is baked into images or
   committed (§54, §56).
-- GitHub Actions authenticates to AWS with OIDC, never long-lived keys (§5.5).
+- GitHub Actions authenticates to AWS with OIDC, never long-lived keys (§5.5). See
+  [ADR-022](decisions/ADR-022-github-actions-oidc.md) and [`deployment.md`](deployment.md) for
+  per-environment deploy roles and GitHub Environment configuration.
 
 Serverless constraints that shape the pending decisions:
 
@@ -678,9 +681,12 @@ Redis and ChromaDB, runs migrations, serves the API and document worker with fak
 builds the web app against that API, and executes the critical Playwright project
 (`pnpm run test:e2e:critical`). Smoke Playwright remains in the lighter Web job.
 
-**Planned** (§59–§61, §86): on merge to `main`, build → test → security scan → deploy staging →
-smoke tests → manual approval → production; branch protection requiring green CI and review.
-Production deployment never depends on a developer machine.
+**Implemented (staging)** / **Planned (production)** (§59–§61, §86): on merge to `main`, green CI →
+staging CD (build, Trivy scan, terraform plan, deploy backend/worker/frontend/infra, functional
+smoke covering auth → upload → process → index → RAG/citations → delete, plus Playwright UI smoke)
+via [`.github/workflows/cd-staging.yml`](../.github/workflows/cd-staging.yml); production remains
+manual approval ([`cd-production.yml`](../.github/workflows/cd-production.yml)). Branch protection
+should require green CI and review. See [`deployment.md`](deployment.md).
 
 ---
 

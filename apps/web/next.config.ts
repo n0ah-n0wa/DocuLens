@@ -7,10 +7,11 @@ import type { NextConfig } from "next";
  * Security headers harden the browser surface regardless of hosting choice. CSP allows the
  * Next.js runtime (inline scripts/styles) and the configured API origin only.
  */
-const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000").replace(
-  /\/$/,
-  "",
-);
+const configuredApi = process.env.NEXT_PUBLIC_API_BASE_URL?.trim();
+const apiBaseUrl = (configuredApi && configuredApi.length > 0
+  ? configuredApi
+  : "http://localhost:8000"
+).replace(/\/$/, "");
 
 /** Localhost and 127.0.0.1 are distinct CSP origins; allow both when targeting loopback. */
 function connectSrcOrigins(apiOrigin: string): string {
@@ -64,14 +65,24 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  async headers() {
-    return [
-      {
-        source: "/:path*",
-        headers: securityHeaders,
-      },
-    ];
-  },
+  // CD sets DOCULENS_STATIC_EXPORT=1 for S3+CloudFront (OQ-19 provisional).
+  // Static export cannot use next.config headers(); CloudFront/S3 can add them later.
+  ...(process.env.DOCULENS_STATIC_EXPORT === "1"
+    ? {
+        output: "export" as const,
+        images: { unoptimized: true },
+        trailingSlash: true,
+      }
+    : {
+        async headers() {
+          return [
+            {
+              source: "/:path*",
+              headers: securityHeaders,
+            },
+          ];
+        },
+      }),
 };
 
 export default nextConfig;

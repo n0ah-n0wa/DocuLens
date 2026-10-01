@@ -76,6 +76,10 @@ RUN groupadd --gid 1001 app \
 
 COPY --from=builder --chown=root:root /opt/venv /opt/venv
 
+# Alembic scripts for the migrate Lambda (same image, OQ-23).
+COPY --chown=root:root packages/core/alembic.ini /opt/doculens/alembic.ini
+COPY --chown=root:root packages/core/alembic /opt/doculens/alembic
+
 ENV PATH="/opt/venv/bin:${PATH}" \
     HOME=/home/app \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -94,5 +98,9 @@ STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2).status == 200 else 1)"]
 
+# Local/dev CMD is uvicorn. Lambda overrides image_config to:
+#   entry_point = ["/opt/venv/bin/python", "-m", "awslambdaric"]
+#   command     = ["doculens_api.lambda_handler.handler"]  (API)
+#                 ["doculens_api.migrate_handler.handler"] (migrate)
 # Settings and secrets are injected at runtime (env / Secrets Manager); nothing secret is baked in.
 CMD ["uvicorn", "doculens_api.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-server-header", "--no-access-log"]

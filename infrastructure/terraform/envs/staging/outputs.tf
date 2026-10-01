@@ -63,9 +63,37 @@ output "api_gateway_endpoint" {
   value       = module.api_gateway.api_endpoint
 }
 
+output "frontend_bucket_id" {
+  value = module.frontend.bucket_id
+}
+
+output "frontend_distribution_id" {
+  value = module.frontend.distribution_id
+}
+
+output "frontend_url" {
+  description = "CloudFront URL for the staging web app."
+  value       = module.frontend.frontend_url
+}
+
 output "deploy_role_arn" {
-  description = "GitHub Actions OIDC deploy role (null if disabled)."
+  description = "GitHub Actions OIDC deploy role for staging (null if disabled)."
   value       = module.iam.deploy_role_arn
+}
+
+output "deploy_role_name" {
+  description = "GitHub Actions OIDC deploy role name for staging (null if disabled)."
+  value       = module.iam.deploy_role_name
+}
+
+output "github_oidc_provider_arn" {
+  description = "GitHub OIDC provider ARN referenced by the staging deploy role."
+  value       = module.iam.github_oidc_provider_arn
+}
+
+output "github_oidc_subjects" {
+  description = "OIDC sub claim patterns trusted by the staging deploy role."
+  value       = module.iam.github_oidc_subjects
 }
 
 output "vector_store_status" {

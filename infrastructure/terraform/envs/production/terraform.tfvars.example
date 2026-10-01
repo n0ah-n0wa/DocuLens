@@ -13,9 +13,12 @@ redis_node_type   = "cache.t4g.small"
 # ChromaDB hosting is still open (OQ-1).
 chroma_url = "https://chroma.example.internal:8000"
 
-create_github_oidc = true
-github_repository  = "doculens/doculens"
-# github_oidc_subjects defaults to main branch + GitHub Environments.
+# GitHub Actions OIDC (§5.5): create the account-level IdP once here, plus a
+# production-only deploy role. Trust is limited to the GitHub Environment "production".
+create_github_oidc_provider = true
+create_github_deploy_role   = true
+github_repository           = "n0ah-n0wa/DocuLens"
+# Subjects default to: repo:n0ah-n0wa/DocuLens:environment:production
 
 # Set after the first image push (digest-pinned preferred):
 # api_image_uri    = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/doculens-production-api@sha256:..."

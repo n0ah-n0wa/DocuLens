@@ -8,10 +8,14 @@ chroma_url = "https://chroma.example.internal:8000"
 enable_interface_endpoints = false
 enable_vpc_flow_logs       = true
 
-# Optional: enable GitHub OIDC only in one environment per AWS account (usually production).
-# Staging defaults to false to avoid duplicate OIDC provider conflicts.
-create_github_oidc = false
-# github_repository  = "doculens/doculens"
+# GitHub Actions OIDC (§5.5): staging gets its own deploy role. The account-level OIDC
+# provider is created once (usually in production). Leave create_github_oidc_provider
+# false here after the provider exists; set github_repository to enable the role.
+create_github_oidc_provider = false
+create_github_deploy_role   = true
+github_repository           = "n0ah-n0wa/DocuLens"
+# github_oidc_provider_arn  = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+# Subjects default to: repo:n0ah-n0wa/DocuLens:environment:staging
 
 # Set after the first image push, e.g.:
 # api_image_uri    = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/doculens-staging-api@sha256:..."

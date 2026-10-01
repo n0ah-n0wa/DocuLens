@@ -49,6 +49,7 @@ that later readers understand why the system looks the way it does.
 | [ADR-019](ADR-019-document-lifecycle.md)          | Document lifecycle: delete, reprocess, reindex | Accepted               | OQ-5, OQ-7 provisional; OQ-10 half                       |
 | [ADR-020](ADR-020-document-upload-transport.md)   | Document upload HTTP transport                 | Accepted (provisional) | OQ-3 download half still open                            |
 | [ADR-021](ADR-021-frontend-foundation.md)         | Frontend foundation: session storage and tests | Accepted (provisional) | OQ-19 hosting/cookie transport still open                |
+| [ADR-022](ADR-022-github-actions-oidc.md)         | GitHub Actions OIDC authentication to AWS      | Accepted               | —                                                        |
 
 Decisions that only affect ingestion behaviour (OQ-3, OQ-5, OQ-6, OQ-7, OQ-14), the conversation
 model (OQ-8, OQ-18) or observability (OQ-21) are recorded as new ADRs (013 onwards) when

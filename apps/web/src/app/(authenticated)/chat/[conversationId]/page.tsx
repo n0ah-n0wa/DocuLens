@@ -1,10 +1,9 @@
-import type { Metadata } from "next";
-
 import { ChatThreadPage } from "@/components/chat/chat-thread";
 
-export const metadata: Metadata = {
-  title: "Conversation · DocuLens",
-};
+/** Placeholder path so `output: "export"` emits at least one HTML shell. */
+export function generateStaticParams(): { conversationId: string }[] {
+  return [{ conversationId: "_" }];
+}
 
 export default async function ConversationPage({
   params,

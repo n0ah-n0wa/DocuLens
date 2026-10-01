@@ -1,7 +1,8 @@
 # Continuous integration (SPECIFICATIONS.md §59).
 # Actions are pinned to commit SHAs (tag in the trailing comment). Quality-gate steps
 # never use continue-on-error. AWS deploy stays out of this workflow — future CD must use
-# OIDC (`permissions.id-token: write` + the Terraform deploy role), never static keys (§5.5).
+# OIDC (`permissions.id-token: write` + the per-environment Terraform deploy role), never static keys
+# (§5.5). CD lives in cd-staging.yml / cd-production.yml — this workflow does not assume deploy roles.
 name: CI
 
 on:

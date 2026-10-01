@@ -1,0 +1,79 @@
+# Continuous deployment to production via GitHub Actions OIDC (§5.5).
+# Manual approval is required through the GitHub Environment "production".
+# Never uses long-lived AWS access keys.
+name: CD · production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  deploy:
+    name: Deploy · production (OIDC)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: production
+    permissions:
+      contents: read
+      id-token: write # required for OIDC → STS AssumeRoleWithWebIdentity
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require deploy role ARN
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ROLE_ARN}" ]; then
+            echo "Set environment variable AWS_DEPLOY_ROLE_ARN on the production GitHub Environment to terraform output deploy_role_arn." >&2
+            exit 1
+          fi
+          case "${ROLE_ARN}" in
+            arn:aws:iam::*:role/*) ;;
+            *)
+              echo "AWS_DEPLOY_ROLE_ARN must be an IAM role ARN." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: doculens-cd-production-${{ github.run_id }}
+
+      - name: Validate assumed identity
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity
+          IDENTITY="$(aws sts get-caller-identity --query Arn --output text)"
+          echo "Assumed ${IDENTITY}"
+          case "${IDENTITY}" in
+            *assumed-role/*deploy*) ;;
+            *)
+              echo "Expected an assumed deploy role; got: ${IDENTITY}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.1.7
+
+      - name: OIDC deploy path ready
+        run: |
+          set -euo pipefail
+          echo "OIDC authentication succeeded for production."
+          echo "ECR registry: ${{ steps.ecr.outputs.registry }}"
+          echo "Next: push digest-tagged images and UpdateFunctionCode (see docs/deployment.md)."

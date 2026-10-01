@@ -1,16 +1,27 @@
-import { describe, expect, it } from "vitest";
-
-import { appConfig } from "@/lib/config";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("appConfig", () => {
-  it("exposes a non-empty absolute API base URL without a trailing slash", () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    Reflect.deleteProperty(process.env, "NEXT_PUBLIC_API_BASE_URL");
+    vi.resetModules();
+  });
+
+  it("exposes a non-empty absolute API base URL without a trailing slash", async () => {
+    const { appConfig } = await import("@/lib/config");
     expect(appConfig.apiBaseUrl).toMatch(/^https?:\/\//);
     expect(appConfig.apiBaseUrl.endsWith("/")).toBe(false);
   });
 
-  it("defaults to the documented local API origin when env is unset", () => {
-    // Vitest loads this module without NEXT_PUBLIC_API_BASE_URL; the static
-    // process.env.NEXT_PUBLIC_API_BASE_URL access must still resolve to the fallback.
+  it("defaults to the documented local API origin when env is unset", async () => {
+    const { appConfig } = await import("@/lib/config");
     expect(appConfig.apiBaseUrl).toBe("http://localhost:8000");
+  });
+
+  it("honours NEXT_PUBLIC_API_BASE_URL when set", async () => {
+    vi.stubEnv("NEXT_PUBLIC_API_BASE_URL", "https://api.example.test/");
+    vi.resetModules();
+    const { appConfig } = await import("@/lib/config");
+    expect(appConfig.apiBaseUrl).toBe("https://api.example.test");
   });
 });
