@@ -39,6 +39,12 @@ variable "api_origin" {
   default     = ""
 }
 
+variable "waf_rate_limit" {
+  description = "WAFv2 rate-based rule limit (requests per 5-minute window per IP)."
+  type        = number
+  default     = 2000
+}
+
 variable "tags" {
   type    = map(string)
   default = {}
@@ -46,10 +52,13 @@ variable "tags" {
 
 locals {
   connect_src = var.api_origin != "" ? "'self' ${trimsuffix(var.api_origin, "/")}" : "'self' https://*.execute-api.${data.aws_region.current.region}.amazonaws.com"
-  csp         = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src ${local.connect_src}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+  # unsafe-inline retained for Next.js static export; unsafe-eval removed.
+  csp = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src ${local.connect_src}; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 }
 
 data "aws_region" "current" {}
+
+data "aws_caller_identity" "current" {}
 
 data "aws_canonical_user_id" "current" {}
 
@@ -173,6 +182,140 @@ resource "aws_s3_bucket_lifecycle_configuration" "web_logs" {
   }
 }
 
+resource "aws_s3_bucket_policy" "web_logs" {
+  bucket = aws_s3_bucket.web_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.web_logs.arn,
+          "${aws_s3_bucket.web_logs.arn}/*",
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      }
+    ]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.web_logs]
+}
+
+# Separate S3 access-logs bucket — CloudFront log ACL grants conflict with BucketOwnerEnforced
+# destinations used for S3 server access logging.
+resource "aws_s3_bucket" "web_s3_access_logs" {
+  bucket_prefix = "${var.name_prefix}-web-s3-logs-"
+  force_destroy = var.force_destroy
+  tags          = merge(var.tags, { Name = "${var.name_prefix}-web-s3-access-logs" })
+}
+
+resource "aws_s3_bucket_ownership_controls" "web_s3_access_logs" {
+  bucket = aws_s3_bucket.web_s3_access_logs.id
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "web_s3_access_logs" {
+  bucket = aws_s3_bucket.web_s3_access_logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "web_s3_access_logs" {
+  bucket = aws_s3_bucket.web_s3_access_logs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+#trivy:ignore:AVD-AWS-0132 S3 server access-log destinations must use SSE-S3 (AES256), not CMK/SSE-KMS.
+resource "aws_s3_bucket_server_side_encryption_configuration" "web_s3_access_logs" {
+  bucket = aws_s3_bucket.web_s3_access_logs.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "web_s3_access_logs" {
+  bucket = aws_s3_bucket.web_s3_access_logs.id
+
+  rule {
+    id     = "expire-s3-access-logs"
+    status = "Enabled"
+    filter {}
+    expiration {
+      days = 90
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "web_s3_access_logs" {
+  bucket = aws_s3_bucket.web_s3_access_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.web_s3_access_logs.arn,
+          "${aws_s3_bucket.web_s3_access_logs.arn}/*",
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      },
+      {
+        Sid    = "AllowS3LogDeliveryWrite"
+        Effect = "Allow"
+        Principal = {
+          Service = "logging.s3.amazonaws.com"
+        }
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.web_s3_access_logs.arn}/*"
+        Condition = {
+          ArnLike = {
+            "aws:SourceArn" = aws_s3_bucket.web.arn
+          }
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      }
+    ]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.web_s3_access_logs]
+}
+
+resource "aws_s3_bucket_logging" "web" {
+  bucket = aws_s3_bucket.web.id
+
+  target_bucket = aws_s3_bucket.web_s3_access_logs.id
+  target_prefix = "s3-access/"
+
+  depends_on = [aws_s3_bucket_policy.web_s3_access_logs]
+}
+
 resource "aws_wafv2_web_acl" "web" {
   provider = aws.us_east_1
 
@@ -181,6 +324,28 @@ resource "aws_wafv2_web_acl" "web" {
 
   default_action {
     allow {}
+  }
+
+  rule {
+    name     = "AWSManagedRulesAmazonIpReputationList"
+    priority = 0
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesAmazonIpReputationList"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-ip-rep"
+      sampled_requests_enabled   = true
+    }
   }
 
   rule {
@@ -205,6 +370,72 @@ resource "aws_wafv2_web_acl" "web" {
     }
   }
 
+  rule {
+    name     = "AWSManagedRulesKnownBadInputsRuleSet"
+    priority = 2
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesKnownBadInputsRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-bad-inputs"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWSManagedRulesSQLiRuleSet"
+    priority = 3
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesSQLiRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-sqli"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "RateLimitPerIP"
+    priority = 4
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = var.waf_rate_limit
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-web-rate"
+      sampled_requests_enabled   = true
+    }
+  }
+
   visibility_config {
     cloudwatch_metrics_enabled = true
     metric_name                = "${var.name_prefix}-web"
@@ -212,6 +443,70 @@ resource "aws_wafv2_web_acl" "web" {
   }
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-web-waf" })
+}
+
+# WAFv2 CloudFront logging requires a log group in us-east-1 with a specific name prefix.
+resource "aws_cloudwatch_log_group" "waf" {
+  provider = aws.us_east_1
+
+  name              = "aws-waf-logs-${var.name_prefix}-web"
+  retention_in_days = 90
+  tags              = merge(var.tags, { Name = "${var.name_prefix}-web-waf-logs" })
+}
+
+resource "aws_cloudwatch_log_resource_policy" "waf" {
+  provider = aws.us_east_1
+
+  policy_name = "${var.name_prefix}-web-waf-logs"
+
+  policy_document = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AWSLogDeliveryWrite"
+        Effect = "Allow"
+        Principal = {
+          Service = "delivery.logs.amazonaws.com"
+        }
+        Action   = "logs:PutLogEvents"
+        Resource = "${aws_cloudwatch_log_group.waf.arn}:*"
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+          ArnLike = {
+            "aws:SourceArn" = "arn:aws:logs:us-east-1:${data.aws_caller_identity.current.account_id}:*"
+          }
+        }
+      },
+      {
+        Sid    = "AWSLogDeliveryCreateLogStream"
+        Effect = "Allow"
+        Principal = {
+          Service = "delivery.logs.amazonaws.com"
+        }
+        Action   = "logs:CreateLogStream"
+        Resource = "${aws_cloudwatch_log_group.waf.arn}:*"
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+          ArnLike = {
+            "aws:SourceArn" = "arn:aws:logs:us-east-1:${data.aws_caller_identity.current.account_id}:*"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "web" {
+  provider = aws.us_east_1
+
+  resource_arn            = aws_wafv2_web_acl.web.arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf.arn]
+
+  depends_on = [aws_cloudwatch_log_resource_policy.waf]
 }
 
 resource "aws_cloudfront_origin_access_control" "web" {
@@ -362,6 +657,54 @@ data "aws_iam_policy_document" "web_bucket" {
       test     = "Bool"
       variable = "aws:SecureTransport"
       values   = ["false"]
+    }
+  }
+
+  statement {
+    sid     = "DenyIncorrectEncryptionHeader"
+    effect  = "Deny"
+    actions = ["s3:PutObject"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    resources = ["${aws_s3_bucket.web.arn}/*"]
+    condition {
+      test     = "StringNotEquals"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["aws:kms"]
+    }
+  }
+
+  statement {
+    sid     = "DenyUnencryptedObjectUploads"
+    effect  = "Deny"
+    actions = ["s3:PutObject"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    resources = ["${aws_s3_bucket.web.arn}/*"]
+    condition {
+      test     = "Null"
+      variable = "s3:x-amz-server-side-encryption"
+      values   = ["true"]
+    }
+  }
+
+  statement {
+    sid     = "DenyIncorrectEncryptionKey"
+    effect  = "Deny"
+    actions = ["s3:PutObject"]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    resources = ["${aws_s3_bucket.web.arn}/*"]
+    condition {
+      test     = "StringNotEqualsIfExists"
+      variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"
+      values   = [var.kms_key_arn]
     }
   }
 }

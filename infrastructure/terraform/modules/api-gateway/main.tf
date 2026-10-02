@@ -46,6 +46,24 @@ variable "cors_allow_origins" {
   default = []
 }
 
+variable "enable_waf" {
+  description = "Attach a regional WAFv2 Web ACL to the HTTP API stage."
+  type        = bool
+  default     = true
+}
+
+variable "waf_rate_limit" {
+  description = "WAFv2 rate-based rule limit (requests per 5-minute window per IP)."
+  type        = number
+  default     = 2000
+}
+
+variable "alarm_actions" {
+  description = "SNS topic ARNs for API Gateway 5XX alarm."
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   type    = map(string)
   default = {}
@@ -98,15 +116,19 @@ resource "aws_apigatewayv2_stage" "this" {
   access_log_settings {
     destination_arn = var.access_log_group_arn
     format = jsonencode({
-      requestId      = "$context.requestId"
-      ip             = "$context.identity.sourceIp"
-      requestTime    = "$context.requestTime"
-      httpMethod     = "$context.httpMethod"
-      routeKey       = "$context.routeKey"
-      status         = "$context.status"
-      protocol       = "$context.protocol"
-      responseLength = "$context.responseLength"
-      integrationErr = "$context.integrationErrorMessage"
+      requestId          = "$context.requestId"
+      ip                 = "$context.identity.sourceIp"
+      requestTime        = "$context.requestTime"
+      httpMethod         = "$context.httpMethod"
+      routeKey           = "$context.routeKey"
+      path               = "$context.path"
+      status             = "$context.status"
+      protocol           = "$context.protocol"
+      responseLength     = "$context.responseLength"
+      responseLatency    = "$context.responseLatency"
+      integrationLatency = "$context.integrationLatency"
+      userAgent          = "$context.identity.userAgent"
+      integrationErr     = "$context.integrationErrorMessage"
     })
   }
 
@@ -121,6 +143,164 @@ resource "aws_lambda_permission" "apigw" {
   source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*"
 }
 
+resource "aws_wafv2_web_acl" "api" {
+  count = var.enable_waf ? 1 : 0
+
+  name  = "${var.name_prefix}-api"
+  scope = "REGIONAL"
+
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "AWSManagedRulesAmazonIpReputationList"
+    priority = 0
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesAmazonIpReputationList"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-api-ip-rep"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 1
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-api-common"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWSManagedRulesKnownBadInputsRuleSet"
+    priority = 2
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesKnownBadInputsRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-api-bad-inputs"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWSManagedRulesSQLiRuleSet"
+    priority = 3
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesSQLiRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-api-sqli"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "RateLimitPerIP"
+    priority = 4
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = var.waf_rate_limit
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-api-rate"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.name_prefix}-api"
+    sampled_requests_enabled   = true
+  }
+
+  tags = merge(var.tags, { Name = "${var.name_prefix}-api-waf" })
+}
+
+resource "aws_wafv2_web_acl_association" "api" {
+  count = var.enable_waf ? 1 : 0
+
+  resource_arn = aws_apigatewayv2_stage.this.arn
+  web_acl_arn  = aws_wafv2_web_acl.api[0].arn
+}
+
+resource "aws_cloudwatch_metric_alarm" "api_gateway_5xx" {
+  alarm_name          = "${var.name_prefix}-apigw-5xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "5xx"
+  namespace           = "AWS/ApiGateway"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 5
+  treat_missing_data  = "notBreaching"
+  alarm_description   = "API Gateway HTTP API 5XX responses"
+  alarm_actions       = var.alarm_actions
+  ok_actions          = var.alarm_actions
+
+  dimensions = {
+    ApiId = aws_apigatewayv2_api.this.id
+    Stage = aws_apigatewayv2_stage.this.name
+  }
+
+  tags = var.tags
+}
+
 output "api_id" {
   value = aws_apigatewayv2_api.this.id
 }
@@ -132,4 +312,13 @@ output "api_endpoint" {
 
 output "execution_arn" {
   value = aws_apigatewayv2_api.this.execution_arn
+}
+
+output "stage_arn" {
+  value = aws_apigatewayv2_stage.this.arn
+}
+
+output "waf_acl_arn" {
+  description = "Regional WAFv2 Web ACL ARN (null when enable_waf is false)."
+  value       = var.enable_waf ? aws_wafv2_web_acl.api[0].arn : null
 }

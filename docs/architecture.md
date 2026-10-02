@@ -64,8 +64,8 @@ Principles the specification fixes (§1, §4, §90):
 The layout adapts §71 as recorded in [ADR-001](decisions/ADR-001-backend-architecture.md): the
 framework-free core is its own package so that packaging itself enforces the §72 boundary.
 
-**Planned** components not yet present: full production CD beyond OIDC auth, and remaining hosting
-open questions (`OQ-1`, `OQ-2`). Staging CD is implemented ([`deployment.md`](deployment.md)).
+**Planned** components not yet present: remaining hosting open questions (`OQ-1`, `OQ-2`).
+Staging and production CD are implemented ([`deployment.md`](deployment.md)).
 Terraform modules (§57) live under `infrastructure/terraform/`. The RAG evaluation harness lives
 under `evals/` (§62–§63) and runs deterministically in CI via `make eval` / `uv run python -m evals`,
 writing machine-readable results to `docs/eval/latest.json`. Methodology and limitations:
@@ -596,7 +596,9 @@ sequenceDiagram
 ## 12. AWS target architecture
 
 **Implemented:** Terraform roots for `staging` and `production` with pinned Terraform and AWS
-provider versions and a partial S3 backend. No resources, roles or modules exist.
+provider versions, remote state (S3 + DynamoDB lock, optional SSE-KMS via bootstrap stack), and
+modules for networking, compute, data stores, IAM/OIDC, frontend, API Gateway, and observability.
+Production forces stronger networking, WAF, encryption, and alarm defaults than staging.
 
 **Planned** (§5.4, §57–§58, §87):
 
@@ -681,12 +683,13 @@ Redis and ChromaDB, runs migrations, serves the API and document worker with fak
 builds the web app against that API, and executes the critical Playwright project
 (`pnpm run test:e2e:critical`). Smoke Playwright remains in the lighter Web job.
 
-**Implemented (staging)** / **Planned (production)** (§59–§61, §86): on merge to `main`, green CI →
-staging CD (build, Trivy scan, terraform plan, deploy backend/worker/frontend/infra, functional
-smoke covering auth → upload → process → index → RAG/citations → delete, plus Playwright UI smoke)
-via [`.github/workflows/cd-staging.yml`](../.github/workflows/cd-staging.yml); production remains
-manual approval ([`cd-production.yml`](../.github/workflows/cd-production.yml)). Branch protection
-should require green CI and review. See [`deployment.md`](deployment.md).
+**Implemented** (§59–§61, §86): on merge to `main`, green CI → staging CD (build, Trivy scan,
+terraform plan, deploy backend/worker/frontend/infra, functional smoke covering auth → upload →
+process → index → RAG/citations → delete, plus Playwright UI smoke) via
+[`.github/workflows/cd-staging.yml`](../.github/workflows/cd-staging.yml); production CD requires
+green CI, green staging (including smoke), and GitHub Environment approval before plan/deploy/smoke
+([`cd-production.yml`](../.github/workflows/cd-production.yml)). Rollback is documented in
+[`deployment.md`](deployment.md). Branch protection should require green CI and review.
 
 ---
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Terraform plan for staging (no apply). Expects OIDC/AWS creds already configured.
+# Terraform plan for production (no apply). Expects OIDC/AWS creds already configured.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -7,7 +7,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 : "${TF_STATE_BUCKET:?}"
 : "${TF_LOCK_TABLE:?}"
 
-TF_DIR="${ROOT}/infrastructure/terraform/envs/staging"
+TF_DIR="${ROOT}/infrastructure/terraform/envs/production"
+mkdir -p "${ROOT}/.local"
 BACKEND_KMS_LINE=""
 if [[ -n "${TF_STATE_KMS_KEY_ID:-}" ]]; then
   BACKEND_KMS_LINE="kms_key_id     = \"${TF_STATE_KMS_KEY_ID}\""
@@ -22,6 +23,6 @@ EOF
 
 cd "${TF_DIR}"
 terraform init -input=false -backend-config=backend.hcl
-terraform plan -input=false -out="${ROOT}/.local/staging.tfplan"
-terraform show -no-color "${ROOT}/.local/staging.tfplan" > "${ROOT}/.local/staging.tfplan.txt"
-echo "Wrote .local/staging.tfplan"
+terraform plan -input=false -out="${ROOT}/.local/production.tfplan"
+terraform show -no-color "${ROOT}/.local/production.tfplan" > "${ROOT}/.local/production.tfplan.txt"
+echo "Wrote .local/production.tfplan"

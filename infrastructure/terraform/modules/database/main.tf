@@ -11,6 +11,10 @@ terraform {
       source  = "hashicorp/random"
       version = ">= 3.6.0, < 4.0.0"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = ">= 3.2.0, < 4.0.0"
+    }
   }
 }
 
@@ -88,6 +92,18 @@ variable "iam_database_authentication_enabled" {
   default     = true
 }
 
+variable "performance_insights_enabled" {
+  description = "Enable RDS Performance Insights (encrypted with the environment CMK)."
+  type        = bool
+  default     = false
+}
+
+variable "prevent_destroy" {
+  description = "When true, block terraform destroy via a dependent null_resource guard (lifecycle.prevent_destroy cannot take a variable)."
+  type        = bool
+  default     = false
+}
+
 variable "database_name" {
   type    = string
   default = "doculens"
@@ -158,11 +174,26 @@ resource "aws_db_instance" "this" {
 
   copy_tags_to_snapshot           = true
   auto_minor_version_upgrade      = true
-  performance_insights_enabled    = false
+  performance_insights_enabled    = var.performance_insights_enabled
+  performance_insights_kms_key_id = var.performance_insights_enabled ? var.kms_key_arn : null
   apply_immediately               = var.apply_immediately
   enabled_cloudwatch_logs_exports = var.cloudwatch_logs_exports
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-postgres" })
+}
+
+# Terraform forbids interpolating variables into lifecycle.prevent_destroy; this guard
+# blocks destroy of the instance whenever prevent_destroy is true (production).
+resource "null_resource" "prevent_destroy" {
+  count = var.prevent_destroy ? 1 : 0
+
+  triggers = {
+    db_arn = aws_db_instance.this.arn
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 output "endpoint" {
@@ -202,9 +233,9 @@ output "arn" {
 }
 
 output "asyncpg_url" {
-  description = "SQLAlchemy asyncpg URL for the application."
+  description = "SQLAlchemy asyncpg URL for the application (ssl=require for asyncpg)."
   value = format(
-    "postgresql+asyncpg://%s:%s@%s:%s/%s",
+    "postgresql+asyncpg://%s:%s@%s:%s/%s?ssl=require",
     aws_db_instance.this.username,
     urlencode(random_password.master.result),
     aws_db_instance.this.address,

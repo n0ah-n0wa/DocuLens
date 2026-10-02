@@ -241,6 +241,10 @@ resource "aws_lambda_function" "migrate" {
     security_group_ids = var.security_group_ids
   }
 
+  tracing_config {
+    mode = "Active"
+  }
+
   tags = merge(var.tags, { Name = "${var.name_prefix}-migrate" })
 }
 

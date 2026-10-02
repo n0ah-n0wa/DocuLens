@@ -1,8 +1,11 @@
 aws_region = "eu-central-1"
 
+# Optional: pin the AWS account (provider allowed_account_ids).
+# aws_account_id = "123456789012"
+
 vpc_cidr          = "10.30.0.0/16"
 az_count          = 3
-nat_gateway_count = 2
+nat_gateway_count = 3
 
 enable_interface_endpoints = true
 enable_vpc_flow_logs       = true
@@ -12,6 +15,9 @@ redis_node_type   = "cache.t4g.small"
 
 # ChromaDB hosting is still open (OQ-1).
 chroma_url = "https://chroma.example.internal:8000"
+
+# After the first apply, set this to terraform output -raw frontend_url so browsers can call the API.
+# cors_allow_origins = ["https://d111111abcdef8.cloudfront.net"]
 
 # GitHub Actions OIDC (§5.5): create the account-level IdP once here, plus a
 # production-only deploy role. Trust is limited to the GitHub Environment "production".

@@ -20,6 +20,9 @@ provider "aws" {
   }
 }
 
+data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
+
 locals {
   project     = "doculens"
   environment = "staging"
@@ -33,6 +36,9 @@ locals {
 
   api_function_name    = "${local.name_prefix}-api"
   worker_function_name = "${local.name_prefix}-worker"
+
+  documents_queue_arn = "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.name_prefix}-documents"
+  documents_dlq_arn   = "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.name_prefix}-documents-dlq"
 
   secrets_arns = compact([
     module.secrets.app_secret_arn,
@@ -50,6 +56,7 @@ module "networking" {
   enable_interface_endpoints = var.enable_interface_endpoints
   enable_vpc_flow_logs       = var.enable_vpc_flow_logs
   flow_logs_retention_days   = var.log_retention_days
+  kms_key_arn                = module.kms.key_arn
   tags                       = local.common_tags
 }
 
@@ -80,9 +87,11 @@ module "storage" {
 module "queue" {
   source = "../../modules/queue"
 
-  name_prefix = local.name_prefix
-  kms_key_arn = module.kms.key_arn
-  tags        = local.common_tags
+  name_prefix     = local.name_prefix
+  kms_key_arn     = module.kms.key_arn
+  api_role_arn    = module.iam.api_role_arn
+  worker_role_arn = module.iam.worker_role_arn
+  tags            = local.common_tags
 }
 
 module "database" {
@@ -134,8 +143,8 @@ module "iam" {
 
   name_prefix                 = local.name_prefix
   documents_bucket_arn        = module.storage.bucket_arn
-  sqs_queue_arn               = module.queue.queue_arn
-  sqs_dlq_arn                 = module.queue.dlq_arn
+  sqs_queue_arn               = local.documents_queue_arn
+  sqs_dlq_arn                 = local.documents_dlq_arn
   secrets_arns                = local.secrets_arns
   kms_key_arn                 = module.kms.key_arn
   create_github_oidc_provider = var.create_github_oidc_provider
@@ -249,5 +258,3 @@ module "api_gateway" {
   ]
   tags = local.common_tags
 }
-
-data "aws_caller_identity" "current" {}

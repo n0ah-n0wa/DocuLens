@@ -166,6 +166,125 @@ resource "aws_s3_bucket_policy" "documents" {
   depends_on = [aws_s3_bucket_public_access_block.documents]
 }
 
+# --- Access logs destination (SSE-S3 required for S3 server access logging) ----------
+
+resource "aws_s3_bucket" "access_logs" {
+  bucket_prefix = "${var.name_prefix}-docs-logs-"
+  force_destroy = var.force_destroy
+
+  tags = merge(var.tags, { Name = "${var.name_prefix}-documents-access-logs" })
+}
+
+resource "aws_s3_bucket_ownership_controls" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+#trivy:ignore:AVD-AWS-0132 S3 server access-log destinations must use SSE-S3 (AES256), not CMK/SSE-KMS.
+resource "aws_s3_bucket_server_side_encryption_configuration" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  rule {
+    id     = "expire-access-logs"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      days = 90
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  depends_on = [aws_s3_bucket_versioning.access_logs]
+}
+
+resource "aws_s3_bucket_policy" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.access_logs.arn,
+          "${aws_s3_bucket.access_logs.arn}/*",
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      },
+      {
+        Sid    = "AllowS3LogDeliveryWrite"
+        Effect = "Allow"
+        Principal = {
+          Service = "logging.s3.amazonaws.com"
+        }
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.access_logs.arn}/*"
+        Condition = {
+          ArnLike = {
+            "aws:SourceArn" = aws_s3_bucket.documents.arn
+          }
+          StringEquals = {
+            "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      }
+    ]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.access_logs]
+}
+
+resource "aws_s3_bucket_logging" "documents" {
+  bucket = aws_s3_bucket.documents.id
+
+  target_bucket = aws_s3_bucket.access_logs.id
+  target_prefix = "documents/"
+
+  depends_on = [aws_s3_bucket_policy.access_logs]
+}
+
 output "bucket_id" {
   description = "Documents bucket name."
   value       = aws_s3_bucket.documents.id
@@ -179,4 +298,9 @@ output "bucket_arn" {
 output "bucket_region" {
   description = "Region of the documents bucket."
   value       = aws_s3_bucket.documents.region
+}
+
+output "access_logs_bucket_id" {
+  description = "Documents access-logs bucket name."
+  value       = aws_s3_bucket.access_logs.id
 }

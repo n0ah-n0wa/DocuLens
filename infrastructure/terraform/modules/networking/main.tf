@@ -74,6 +74,12 @@ variable "flow_logs_retention_days" {
   default = 14
 }
 
+variable "kms_key_arn" {
+  description = "Optional CMK ARN for VPC flow log group encryption. Empty skips KMS."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags applied to every resource."
   type        = map(string)
@@ -376,11 +382,20 @@ resource "aws_vpc_endpoint" "interface" {
   tags = merge(var.tags, { Name = "${var.name_prefix}-${replace(each.value, ".", "-")}-endpoint" })
 }
 
+# Restrict the AWS default security group (no ingress/egress) so it is never left open.
+resource "aws_default_security_group" "this" {
+  vpc_id = aws_vpc.this.id
+
+  # Explicitly omit ingress/egress blocks — AWS provider removes all rules.
+  tags = merge(var.tags, { Name = "${var.name_prefix}-default-sg" })
+}
+
 resource "aws_cloudwatch_log_group" "vpc_flow" {
   count = var.enable_vpc_flow_logs ? 1 : 0
 
   name              = "/aws/vpc/${var.name_prefix}/flow-logs"
   retention_in_days = var.flow_logs_retention_days
+  kms_key_id        = var.kms_key_arn != "" ? var.kms_key_arn : null
   tags              = merge(var.tags, { Name = "${var.name_prefix}-vpc-flow-logs" })
 }
 

@@ -81,6 +81,26 @@ resource "aws_secretsmanager_secret_version" "app" {
   ))
 }
 
+resource "aws_secretsmanager_secret_policy" "app_transport" {
+  secret_arn = aws_secretsmanager_secret.app.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyInsecureTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "secretsmanager:*"
+      Resource  = "*"
+      Condition = {
+        Bool = {
+          "aws:SecureTransport" = "false"
+        }
+      }
+    }]
+  })
+}
+
 output "app_secret_arn" {
   description = "ARN of the application secrets bundle."
   value       = aws_secretsmanager_secret.app.arn
@@ -89,10 +109,4 @@ output "app_secret_arn" {
 output "app_secret_name" {
   description = "Name of the application secrets bundle."
   value       = aws_secretsmanager_secret.app.name
-}
-
-output "jwt_secret" {
-  description = "Generated JWT signing secret."
-  value       = random_password.jwt_secret.result
-  sensitive   = true
 }

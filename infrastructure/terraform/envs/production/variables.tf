@@ -3,6 +3,12 @@ variable "aws_region" {
   type        = string
 }
 
+variable "aws_account_id" {
+  description = "Optional expected AWS account ID; when set, providers refuse other accounts."
+  type        = string
+  default     = ""
+}
+
 variable "vpc_cidr" {
   type    = string
   default = "10.30.0.0/16"
@@ -14,21 +20,31 @@ variable "az_count" {
 }
 
 variable "nat_gateway_count" {
-  description = "NAT gateways (2 covers multi-AZ without paying for a third)."
+  description = "Ignored in production main.tf (forced to az_count for HA). Kept for tfvars compatibility."
   type        = number
-  default     = 2
+  default     = 3
 }
 
 variable "enable_interface_endpoints" {
-  description = "Create interface VPC endpoints (recommended in production)."
+  description = "Must remain true in production (forced in main.tf)."
   type        = bool
   default     = true
+
+  validation {
+    condition     = var.enable_interface_endpoints
+    error_message = "Production requires enable_interface_endpoints = true."
+  }
 }
 
 variable "enable_vpc_flow_logs" {
-  description = "Enable VPC flow logs."
+  description = "Must remain true in production (forced in main.tf)."
   type        = bool
   default     = true
+
+  validation {
+    condition     = var.enable_vpc_flow_logs
+    error_message = "Production requires enable_vpc_flow_logs = true."
+  }
 }
 
 variable "db_instance_class" {
@@ -83,10 +99,9 @@ variable "worker_maximum_concurrency" {
 }
 
 variable "api_reserved_concurrency" {
-  description = "Optional reserved concurrency for the API Lambda."
+  description = "Reserved concurrency for the API Lambda."
   type        = number
-  default     = null
-  nullable    = true
+  default     = 50
 }
 
 variable "api_throttle_burst_limit" {
@@ -122,8 +137,9 @@ variable "chroma_api_token_secret_arn" {
 }
 
 variable "cors_allow_origins" {
-  type    = list(string)
-  default = []
+  description = "API Gateway CORS allow-origins. Set to the CloudFront frontend_url after the first deploy (avoids a Terraform cycle with module.frontend)."
+  type        = list(string)
+  default     = []
 }
 
 variable "create_github_oidc_provider" {

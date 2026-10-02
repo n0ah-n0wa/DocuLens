@@ -17,6 +17,9 @@ fi
 
 export API_URL="${API_URL%/}"
 export FRONTEND_URL="${FRONTEND_URL%/}"
+export DOCULENS_DEPLOY_ENV_FILE="${ROOT}/.local/staging-deploy.env"
+export SMOKE_EMAIL_PREFIX="${SMOKE_EMAIL_PREFIX:-staging-smoke}"
+export SMOKE_LABEL="${SMOKE_LABEL:-Staging}"
 
 echo "==> Staging smoke (API + frontend + auth + upload + process + index + RAG + citations + delete)"
 uv run python scripts/cd/smoke_staging.py

@@ -1,6 +1,7 @@
-"""Staging smoke tests against a live DocuLens stack (SPECIFICATIONS.md §59-§60).
+"""Deployed-environment smoke tests against a live DocuLens stack (§59-§60).
 
-Verifies, with controlled fixture data created by this run only:
+Used by staging and production CD. Verifies, with controlled fixture data created
+by this run only:
 
 1. frontend availability
 2. API availability (liveness + readiness)
@@ -13,10 +14,13 @@ Verifies, with controlled fixture data created by this run only:
 9. deletion (document, conversation, collection) with confirmation
 
 Cleans up every resource it creates, including on failure. Does not depend on
-manually prepared staging state.
+manually prepared environment state.
 
 Environment:
-  API_URL, FRONTEND_URL - required (or loadable from .local/staging-deploy.env)
+  API_URL, FRONTEND_URL - required (or loadable from DOCULENS_DEPLOY_ENV_FILE /
+    .local/staging-deploy.env / .local/production-deploy.env)
+  SMOKE_EMAIL_PREFIX - default staging-smoke (production CD sets production-smoke)
+  SMOKE_LABEL - log label, default Staging
   SMOKE_READY_TIMEOUT_SECONDS - default 300
   SMOKE_POLL_INTERVAL_SECONDS - default 5
   SMOKE_HTTP_TIMEOUT_SECONDS - default 60 (ask may take longer; ask uses 180)
@@ -40,7 +44,20 @@ import httpx
 from doculens.testing.pdfs import pdf_with_pages
 
 ROOT = Path(__file__).resolve().parents[2]
-DEPLOY_ENV_FILE = ROOT / ".local" / "staging-deploy.env"
+
+
+def _deploy_env_file() -> Path:
+    override = os.environ.get("DOCULENS_DEPLOY_ENV_FILE", "").strip()
+    if override:
+        return Path(override)
+    production = ROOT / ".local" / "production-deploy.env"
+    staging = ROOT / ".local" / "staging-deploy.env"
+    if production.is_file() and not staging.is_file():
+        return production
+    return staging
+
+
+DEPLOY_ENV_FILE = ROOT / ".local" / "staging-deploy.env"  # legacy alias; prefer _deploy_env_file()
 
 # Controlled fixture - same handbook text as the critical Playwright suite.
 HANDBOOK_PAGES: tuple[str, ...] = (
@@ -86,9 +103,10 @@ def _fail(message: str) -> NoReturn:
 
 
 def _load_deploy_env() -> None:
-    if not DEPLOY_ENV_FILE.is_file():
+    env_file = _deploy_env_file()
+    if not env_file.is_file():
         return
-    for raw in DEPLOY_ENV_FILE.read_text(encoding="utf-8").splitlines():
+    for raw in env_file.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -101,9 +119,9 @@ def _require_urls() -> tuple[str, str]:
     api = os.environ.get("API_URL", "").rstrip("/")
     frontend = os.environ.get("FRONTEND_URL", "").rstrip("/")
     if not api:
-        _fail("API_URL is required (or run deploy_staging.sh first)")
+        _fail("API_URL is required (or run deploy_staging.sh / deploy_production.sh first)")
     if not frontend:
-        _fail("FRONTEND_URL is required (or run deploy_staging.sh first)")
+        _fail("FRONTEND_URL is required (or run deploy_staging.sh / deploy_production.sh first)")
     return api, frontend
 
 
@@ -114,9 +132,14 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _smoke_label() -> str:
+    return os.environ.get("SMOKE_LABEL", "Staging").strip() or "Staging"
+
+
 def _unique_email() -> str:
+    prefix = os.environ.get("SMOKE_EMAIL_PREFIX", "staging-smoke").strip() or "staging-smoke"
     suffix = secrets.token_hex(4)
-    return f"staging-smoke-{int(time.time())}-{suffix}@example.com"
+    return f"{prefix}-{int(time.time())}-{suffix}@example.com"
 
 
 def _json_body(response: httpx.Response) -> object:
@@ -209,7 +232,7 @@ def check_upload(ctx: SmokeContext) -> None:
         f"{ctx.api_url}/api/v1/collections",
         headers=ctx.auth_headers(),
         json={
-            "name": f"Staging smoke {int(time.time())}",
+            "name": f"{_smoke_label()} smoke {int(time.time())}",
             "description": "Ephemeral smoke collection - safe to delete",
         },
     )
@@ -295,7 +318,7 @@ def check_rag_and_citations(ctx: SmokeContext) -> None:
     created = ctx.client.post(
         f"{ctx.api_url}/api/v1/conversations",
         headers=ctx.auth_headers(),
-        json={"title": "Staging smoke RAG", "collection_id": ctx.collection_id},
+        json={"title": f"{_smoke_label()} smoke RAG", "collection_id": ctx.collection_id},
     )
     conversation = _expect_status(created, HTTPStatus.CREATED, label="POST /conversations")
     if not isinstance(conversation, dict) or not conversation.get("id"):
@@ -383,7 +406,7 @@ def check_deletion(ctx: SmokeContext) -> None:
 
 
 def cleanup(ctx: SmokeContext) -> None:
-    """Best-effort teardown so a mid-run failure does not leave staging clutter."""
+    """Best-effort teardown so a mid-run failure does not leave environment clutter."""
     _log("==> cleanup")
     headers = {}
     if ctx.access_token:
@@ -453,7 +476,7 @@ def run() -> int:
             return 1
         finally:
             cleanup(ctx)
-    _log("==> Staging smoke checks passed")
+    _log(f"==> {_smoke_label()} smoke checks passed")
     return 0
 
 

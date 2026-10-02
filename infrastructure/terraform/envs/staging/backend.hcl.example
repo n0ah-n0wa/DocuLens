@@ -1,10 +1,11 @@
 # Example backend configuration (git-ignored when copied to backend.hcl).
 #
-# Bootstrap once per AWS account (manual / separate bootstrap stack):
-#   1. S3 bucket with versioning + SSE-KMS (prefer a dedicated state CMK)
-#   2. DynamoDB table with LockID (S) for state locking
+# Bootstrap once per AWS account via infrastructure/terraform/bootstrap/state
+# (manual apply — not part of CD):
+#   1. S3 bucket with versioning + SSE-KMS
+#   2. DynamoDB lock table
 #   3. Bucket policy denying non-TLS and public access
-#   4. Separate state keys / backends for staging vs production (isolation)
+#   4. Separate state keys for staging vs production (already in backend.tf)
 #
 # Then:
 #   cp backend.hcl.example backend.hcl
@@ -14,5 +15,5 @@ bucket         = "doculens-terraform-state-ACCOUNT_ID"
 region         = "eu-central-1"
 dynamodb_table = "doculens-terraform-locks"
 encrypt        = true
-# Optional CMK for state objects (recommended):
+# Recommended: CMK from bootstrap/state output kms_key_arn (or TF_STATE_KMS_KEY_ID in CD):
 # kms_key_id   = "arn:aws:kms:eu-central-1:ACCOUNT_ID:key/..."

@@ -3,7 +3,8 @@
 # bootstrapping remote state (see ../../README.md).
 
 provider "aws" {
-  region = var.aws_region
+  region              = var.aws_region
+  allowed_account_ids = var.aws_account_id != "" ? [var.aws_account_id] : null
 
   default_tags {
     tags = local.common_tags
@@ -12,13 +13,17 @@ provider "aws" {
 
 # CloudFront WAFv2 web ACLs must be created in us-east-1.
 provider "aws" {
-  alias  = "us_east_1"
-  region = "us-east-1"
+  alias               = "us_east_1"
+  region              = "us-east-1"
+  allowed_account_ids = var.aws_account_id != "" ? [var.aws_account_id] : null
 
   default_tags {
     tags = local.common_tags
   }
 }
+
+data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
 
 locals {
   project     = "doculens"
@@ -34,6 +39,10 @@ locals {
   api_function_name    = "${local.name_prefix}-api"
   worker_function_name = "${local.name_prefix}-worker"
 
+  # Deterministic queue ARNs so IAM can be created before queue policies that reference roles.
+  documents_queue_arn = "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.name_prefix}-documents"
+  documents_dlq_arn   = "arn:${data.aws_partition.current.partition}:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.name_prefix}-documents-dlq"
+
   secrets_arns = compact([
     module.secrets.app_secret_arn,
     var.chroma_api_token_secret_arn != "" ? var.chroma_api_token_secret_arn : null,
@@ -43,13 +52,15 @@ locals {
 module "networking" {
   source = "../../modules/networking"
 
-  name_prefix                = local.name_prefix
-  cidr_block                 = var.vpc_cidr
-  az_count                   = var.az_count
-  nat_gateway_count          = var.nat_gateway_count
-  enable_interface_endpoints = var.enable_interface_endpoints
-  enable_vpc_flow_logs       = var.enable_vpc_flow_logs
+  name_prefix = local.name_prefix
+  cidr_block  = var.vpc_cidr
+  az_count    = var.az_count
+  # Production HA: one NAT per AZ (ignore cheaper staging-style counts).
+  nat_gateway_count          = var.az_count
+  enable_interface_endpoints = true
+  enable_vpc_flow_logs       = true
   flow_logs_retention_days   = var.log_retention_days
+  kms_key_arn                = module.kms.key_arn
   tags                       = local.common_tags
 }
 
@@ -81,27 +92,31 @@ module "storage" {
 module "queue" {
   source = "../../modules/queue"
 
-  name_prefix = local.name_prefix
-  kms_key_arn = module.kms.key_arn
-  tags        = local.common_tags
+  name_prefix     = local.name_prefix
+  kms_key_arn     = module.kms.key_arn
+  api_role_arn    = module.iam.api_role_arn
+  worker_role_arn = module.iam.worker_role_arn
+  tags            = local.common_tags
 }
 
 module "database" {
   source = "../../modules/database"
 
-  name_prefix              = local.name_prefix
-  subnet_ids               = module.networking.private_subnet_ids
-  security_group_ids       = [module.networking.database_security_group_id]
-  kms_key_arn              = module.kms.key_arn
-  instance_class           = var.db_instance_class
-  allocated_storage_gb     = var.db_allocated_storage_gb
-  max_allocated_storage_gb = var.db_max_allocated_storage_gb
-  multi_az                 = true
-  backup_retention_days    = var.db_backup_retention_days
-  deletion_protection      = true
-  skip_final_snapshot      = false
-  apply_immediately        = false
-  tags                     = local.common_tags
+  name_prefix                  = local.name_prefix
+  subnet_ids                   = module.networking.private_subnet_ids
+  security_group_ids           = [module.networking.database_security_group_id]
+  kms_key_arn                  = module.kms.key_arn
+  instance_class               = var.db_instance_class
+  allocated_storage_gb         = var.db_allocated_storage_gb
+  max_allocated_storage_gb     = var.db_max_allocated_storage_gb
+  multi_az                     = true
+  backup_retention_days        = var.db_backup_retention_days
+  deletion_protection          = true
+  skip_final_snapshot          = false
+  apply_immediately            = false
+  performance_insights_enabled = true
+  prevent_destroy              = true
+  tags                         = local.common_tags
 }
 
 module "cache" {
@@ -116,7 +131,9 @@ module "cache" {
   automatic_failover_enabled = true
   multi_az_enabled           = true
   snapshot_retention_limit   = 7
+  final_snapshot_identifier  = "${local.name_prefix}-redis-final"
   apply_immediately          = false
+  prevent_destroy            = true
   tags                       = local.common_tags
 }
 
@@ -137,8 +154,8 @@ module "iam" {
 
   name_prefix                 = local.name_prefix
   documents_bucket_arn        = module.storage.bucket_arn
-  sqs_queue_arn               = module.queue.queue_arn
-  sqs_dlq_arn                 = module.queue.dlq_arn
+  sqs_queue_arn               = local.documents_queue_arn
+  sqs_dlq_arn                 = local.documents_dlq_arn
   secrets_arns                = local.secrets_arns
   kms_key_arn                 = module.kms.key_arn
   create_github_oidc_provider = var.create_github_oidc_provider
@@ -157,14 +174,17 @@ module "iam" {
 module "observability" {
   source = "../../modules/observability"
 
-  name_prefix          = local.name_prefix
-  kms_key_arn          = module.kms.key_arn
-  log_retention_days   = var.log_retention_days
-  api_function_name    = local.api_function_name
-  worker_function_name = local.worker_function_name
-  dlq_name             = "${local.name_prefix}-documents-dlq"
-  alarm_actions        = var.alarm_actions
-  tags                 = local.common_tags
+  name_prefix           = local.name_prefix
+  kms_key_arn           = module.kms.key_arn
+  log_retention_days    = var.log_retention_days
+  api_function_name     = local.api_function_name
+  worker_function_name  = local.worker_function_name
+  dlq_name              = "${local.name_prefix}-documents-dlq"
+  queue_name            = "${local.name_prefix}-documents"
+  alarm_actions         = var.alarm_actions
+  create_alarm_topic    = true
+  require_alarm_actions = true
+  tags                  = local.common_tags
 }
 
 module "vector_store" {
@@ -174,21 +194,6 @@ module "vector_store" {
   security_group_id           = module.networking.vector_store_security_group_id
   chroma_url                  = var.chroma_url
   chroma_api_token_secret_arn = var.chroma_api_token_secret_arn
-}
-
-module "frontend" {
-  source = "../../modules/frontend"
-
-  providers = {
-    aws           = aws
-    aws.us_east_1 = aws.us_east_1
-  }
-
-  name_prefix   = local.name_prefix
-  kms_key_arn   = module.kms.key_arn
-  force_destroy = false
-  price_class   = "PriceClass_100"
-  tags          = local.common_tags
 }
 
 module "compute" {
@@ -250,12 +255,28 @@ module "api_gateway" {
   lambda_invoke_arn    = module.compute.api_invoke_arn
   lambda_function_name = module.compute.api_function_name
   access_log_group_arn = module.observability.api_gateway_log_group_arn
-  cors_allow_origins = length(var.cors_allow_origins) > 0 ? var.cors_allow_origins : [
-    module.frontend.frontend_url,
-  ]
+  # Avoid cycle with frontend: set cors_allow_origins to the CloudFront URL after first deploy.
+  cors_allow_origins   = var.cors_allow_origins
   throttle_burst_limit = var.api_throttle_burst_limit
   throttle_rate_limit  = var.api_throttle_rate_limit
+  enable_waf           = true
+  alarm_actions        = module.observability.effective_alarm_actions
   tags                 = local.common_tags
 }
 
-data "aws_caller_identity" "current" {}
+# Frontend after API Gateway so CSP connect-src can pin the invoke URL.
+module "frontend" {
+  source = "../../modules/frontend"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  name_prefix   = local.name_prefix
+  kms_key_arn   = module.kms.key_arn
+  force_destroy = false
+  price_class   = "PriceClass_100"
+  api_origin    = module.api_gateway.api_endpoint
+  tags          = local.common_tags
+}

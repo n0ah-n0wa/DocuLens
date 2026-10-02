@@ -11,6 +11,10 @@ terraform {
       source  = "hashicorp/random"
       version = ">= 3.6.0, < 4.0.0"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = ">= 3.2.0, < 4.0.0"
+    }
   }
 }
 
@@ -61,6 +65,19 @@ variable "snapshot_retention_limit" {
   default = 1
 }
 
+variable "final_snapshot_identifier" {
+  description = "Final snapshot id on delete when snapshot_retention_limit > 0. Null skips."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "prevent_destroy" {
+  description = "When true, block terraform destroy via a dependent null_resource guard."
+  type        = bool
+  default     = false
+}
+
 variable "apply_immediately" {
   description = "Apply modifications immediately (prefer false in production)."
   type        = bool
@@ -105,10 +122,28 @@ resource "aws_elasticache_replication_group" "this" {
   automatic_failover_enabled = var.automatic_failover_enabled
   multi_az_enabled           = var.multi_az_enabled
   snapshot_retention_limit   = var.snapshot_retention_limit
-  apply_immediately          = var.apply_immediately
-  transit_encryption_mode    = "required"
+  # final_snapshot_identifier is supported on aws_elasticache_replication_group.
+  final_snapshot_identifier = (
+    var.snapshot_retention_limit > 0 && var.final_snapshot_identifier != null
+    ? var.final_snapshot_identifier
+    : null
+  )
+  apply_immediately       = var.apply_immediately
+  transit_encryption_mode = "required"
 
   tags = merge(var.tags, { Name = "${var.name_prefix}-redis" })
+}
+
+resource "null_resource" "prevent_destroy" {
+  count = var.prevent_destroy ? 1 : 0
+
+  triggers = {
+    replication_group_arn = aws_elasticache_replication_group.this.arn
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 output "primary_endpoint" {

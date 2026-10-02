@@ -45,6 +45,7 @@ principal.
   up the provider by URL.
 - Operators must configure GitHub Environments and `AWS_DEPLOY_ROLE_ARN` as documented in
   [`docs/deployment.md`](../deployment.md).
-- Image push / Lambda update steps can be added to `cd-staging.yml` / `cd-production.yml` without
-  changing the trust model.
+- Image push / Lambda update / plan / smoke / rollback steps live in `cd-staging.yml` and
+  `cd-production.yml` without changing the trust model. Production additionally requires Environment
+  reviewers and green staging CD for the same commit.
 - CI remains keyless and does not assume the deploy role.

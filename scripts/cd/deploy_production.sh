@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Build and push API + worker images to ECR, then apply staging Terraform with digests,
+# Build and push API + worker images to ECR, then apply production Terraform with digests,
 # sync the static frontend, invalidate CloudFront, and invoke migrations.
 #
-# Required env (set by CD · staging; never pass application secrets here):
+# Required env (set by CD · production; never pass application secrets here):
 #   AWS_REGION, IMAGE_TAG (git sha), ECR_REGISTRY
 #   TF_STATE_BUCKET, TF_LOCK_TABLE (remote state)
 # Optional:
 #   TF_VAR_extra_secret_values  — JSON object for Secrets Manager extras (from GitHub
 #                                 Environment secret only; never commit values)
+#   SKIP_IMAGE_BUILD=1          — require pre-tagged images (CD path)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
+mkdir -p "${ROOT}/.local"
 
 : "${AWS_REGION:?}"
 : "${IMAGE_TAG:?}"
@@ -19,12 +21,12 @@ cd "${ROOT}"
 : "${TF_STATE_BUCKET:?}"
 : "${TF_LOCK_TABLE:?}"
 
-API_REPO="${ECR_REGISTRY}/doculens-staging-api"
-WORKER_REPO="${ECR_REGISTRY}/doculens-staging-worker"
+API_REPO="${ECR_REGISTRY}/doculens-production-api"
+WORKER_REPO="${ECR_REGISTRY}/doculens-production-worker"
 API_TAG="${API_REPO}:${IMAGE_TAG}"
 WORKER_TAG="${WORKER_REPO}:${IMAGE_TAG}"
+TF_DIR="${ROOT}/infrastructure/terraform/envs/production"
 
-# Prefer images already loaded/tagged by CD (same digests Trivy scanned). Rebuild only when absent.
 image_present() {
   docker image inspect "$1" >/dev/null 2>&1
 }
@@ -50,7 +52,6 @@ WORKER_DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "${WORKER_TA
 echo "API digest: ${API_DIGEST}"
 echo "Worker digest: ${WORKER_DIGEST}"
 
-TF_DIR="${ROOT}/infrastructure/terraform/envs/staging"
 BACKEND_KMS_LINE=""
 if [[ -n "${TF_STATE_KMS_KEY_ID:-}" ]]; then
   BACKEND_KMS_LINE="kms_key_id     = \"${TF_STATE_KMS_KEY_ID}\""
@@ -62,6 +63,37 @@ dynamodb_table = "${TF_LOCK_TABLE}"
 encrypt        = true
 ${BACKEND_KMS_LINE}
 EOF
+
+echo "==> Snapshot current production digests for rollback"
+(
+  cd "${TF_DIR}"
+  terraform init -input=false -backend-config=backend.hcl >/dev/null
+)
+PREV_API_DIGEST=""
+PREV_WORKER_DIGEST=""
+PREV_API_FN=""
+PREV_WORKER_FN=""
+PREV_FRONTEND_BUCKET=""
+PREV_DISTRIBUTION_ID=""
+if PREV_API_FN="$(cd "${TF_DIR}" && terraform output -raw api_lambda_function_name 2>/dev/null)"; then
+  PREV_API_DIGEST="$(aws lambda get-function --function-name "${PREV_API_FN}" \
+    --query 'Code.ImageUri' --output text 2>/dev/null || true)"
+  PREV_WORKER_FN="$(cd "${TF_DIR}" && terraform output -raw worker_lambda_function_name)"
+  PREV_WORKER_DIGEST="$(aws lambda get-function --function-name "${PREV_WORKER_FN}" \
+    --query 'Code.ImageUri' --output text 2>/dev/null || true)"
+  PREV_FRONTEND_BUCKET="$(cd "${TF_DIR}" && terraform output -raw frontend_bucket_id)"
+  PREV_DISTRIBUTION_ID="$(cd "${TF_DIR}" && terraform output -raw frontend_distribution_id)"
+fi
+{
+  echo "PREV_API_DIGEST=${PREV_API_DIGEST}"
+  echo "PREV_WORKER_DIGEST=${PREV_WORKER_DIGEST}"
+  echo "PREV_API_FUNCTION=${PREV_API_FN}"
+  echo "PREV_WORKER_FUNCTION=${PREV_WORKER_FN}"
+  echo "PREV_FRONTEND_BUCKET=${PREV_FRONTEND_BUCKET}"
+  echo "PREV_DISTRIBUTION_ID=${PREV_DISTRIBUTION_ID}"
+  echo "PREV_IMAGE_TAG_NOTE=Restore Lambda digests with rollback_production.sh; full stack rollback redeploys a prior git SHA."
+} > "${ROOT}/.local/production-pre-deploy.env"
+echo "Wrote .local/production-pre-deploy.env"
 
 echo "==> Terraform init / apply (image digests; secrets stay in Secrets Manager)"
 (
@@ -122,8 +154,12 @@ PY
   echo "FRONTEND_URL=${FRONTEND_URL}"
   echo "API_DIGEST=${API_DIGEST}"
   echo "WORKER_DIGEST=${WORKER_DIGEST}"
-} > "${ROOT}/.local/staging-deploy.env"
+  echo "IMAGE_TAG=${IMAGE_TAG}"
+  echo "FRONTEND_BUCKET=${FRONTEND_BUCKET}"
+  echo "DISTRIBUTION_ID=${DISTRIBUTION_ID}"
+} > "${ROOT}/.local/production-deploy.env"
 
-echo "==> Staging deploy complete"
+echo "==> Production deploy complete"
 echo "    API:      ${API_URL}"
 echo "    Frontend: ${FRONTEND_URL}"
+echo "    Rollback snapshot: .local/production-pre-deploy.env"

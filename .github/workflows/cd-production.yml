@@ -1,10 +1,23 @@
-# Continuous deployment to production via GitHub Actions OIDC (§5.5).
-# Manual approval is required through the GitHub Environment "production".
-# Never uses long-lived AWS access keys.
+# Production continuous deployment (SPECIFICATIONS.md §5.5, §60).
+#
+# Pipeline: CI green → staging CD (deploy + smoke) green → manual approval (GitHub
+# Environment "production") → Build → Security scan → Infrastructure plan → Deploy → Smoke
+#
+# Authenticates with GitHub Actions OIDC only. Application secrets stay in AWS Secrets
+# Manager. Production must never depend on a developer's local machine.
 name: CD · production
 
 on:
+  workflow_run:
+    workflows: ["CD · staging"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      git_sha:
+        description: "Commit SHA already green on CI and staging (default: current main tip)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -15,29 +28,195 @@ concurrency:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+  UV_VERSION: "0.12.17"
+  TERRAFORM_VERSION: "1.16.3"
+  TRIVY_VERSION: "v0.74.0"
   NEXT_TELEMETRY_DISABLED: "1"
+  DOCULENS_STATIC_EXPORT: "1"
+  CHECKOUT_REF: ${{ github.event.inputs.git_sha || github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
-  deploy:
-    name: Deploy · production (OIDC)
+  gates:
+    name: Require CI + staging success
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
+    steps:
+      - name: Resolve and gate
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          STAGING_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          STAGING_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          DISPATCH_SHA: ${{ github.event.inputs.git_sha }}
+          FALLBACK_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [ "${EVENT_NAME}" = "workflow_run" ]; then
+            CHECKOUT_SHA="${STAGING_HEAD_SHA}"
+            if [ "${STAGING_CONCLUSION}" != "success" ]; then
+              echo "Staging CD did not succeed (conclusion=${STAGING_CONCLUSION}); refusing production." >&2
+              exit 1
+            fi
+            echo "Staging CD succeeded for ${CHECKOUT_SHA}."
+          else
+            CHECKOUT_SHA="${DISPATCH_SHA:-${FALLBACK_SHA}}"
+            if [ -z "${CHECKOUT_SHA}" ]; then
+              echo "No commit SHA to deploy." >&2
+              exit 1
+            fi
+            echo "Manual dispatch — verifying gates for ${CHECKOUT_SHA}"
+
+            staging_conclusion="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${REPO}/actions/workflows/cd-staging.yml/runs?head_sha=${CHECKOUT_SHA}&per_page=10" \
+              --jq '[.workflow_runs[] | select(.conclusion != null)] | first | .conclusion // "missing"')"
+            if [ "${staging_conclusion}" != "success" ]; then
+              echo "Staging CD conclusion for ${CHECKOUT_SHA} is '${staging_conclusion}'; refusing production." >&2
+              exit 1
+            fi
+            echo "Staging CD succeeded for dispatch ref."
+          fi
+
+          ci_conclusion="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${CHECKOUT_SHA}&per_page=10" \
+            --jq '[.workflow_runs[] | select(.conclusion != null)] | first | .conclusion // "missing"')"
+          if [ "${ci_conclusion}" != "success" ]; then
+            echo "CI conclusion for ${CHECKOUT_SHA} is '${ci_conclusion}'; refusing production." >&2
+            exit 1
+          fi
+          echo "CI succeeded for ${CHECKOUT_SHA}."
+
+          echo "checkout_ref=${CHECKOUT_SHA}" >> "${GITHUB_OUTPUT}"
+
+  protect:
+    name: Production protection · manual approval
+    needs: gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4320
     environment: production
     permissions:
       contents: read
-      id-token: write # required for OIDC → STS AssumeRoleWithWebIdentity
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Require deploy role ARN
+      - name: Record approved production deployment
         env:
-          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          CHECKOUT_SHA: ${{ needs.gates.outputs.checkout_ref }}
         run: |
           set -euo pipefail
-          if [ -z "${ROLE_ARN}" ]; then
-            echo "Set environment variable AWS_DEPLOY_ROLE_ARN on the production GitHub Environment to terraform output deploy_role_arn." >&2
-            exit 1
-          fi
+          echo "Production Environment approval granted for ${CHECKOUT_SHA}."
+          echo "Configure required reviewers on the GitHub Environment 'production'."
+
+  build:
+    name: Build · images
+    needs: [gates, protect]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gates.outputs.checkout_ref }}
+      - name: Image tag
+        id: meta
+        run: |
+          set -euo pipefail
+          TAG="sha-$(echo '${{ needs.gates.outputs.checkout_ref }}' | cut -c1-40)"
+          echo "image_tag=${TAG}" >> "${GITHUB_OUTPUT}"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build API image
+        run: docker build -f docker/api.Dockerfile -t "doculens-api:${{ steps.meta.outputs.image_tag }}" .
+      - name: Build worker image
+        run: docker build -f docker/worker.Dockerfile -t "doculens-worker:${{ steps.meta.outputs.image_tag }}" .
+      - name: Save images
+        run: |
+          set -euo pipefail
+          mkdir -p .local/cd
+          docker save "doculens-api:${{ steps.meta.outputs.image_tag }}" | gzip > .local/cd/api.tar.gz
+          docker save "doculens-worker:${{ steps.meta.outputs.image_tag }}" | gzip > .local/cd/worker.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-images-${{ steps.meta.outputs.image_tag }}
+          path: .local/cd/*.tar.gz
+          retention-days: 14
+
+  security_scan:
+    name: Security scan · container images
+    needs: [gates, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: production-images-${{ needs.build.outputs.image_tag }}
+          path: .local/cd
+      - name: Load images
+        run: |
+          set -euo pipefail
+          gunzip -c .local/cd/api.tar.gz | docker load
+          gunzip -c .local/cd/worker.tar.gz | docker load
+      - name: Scan API image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: doculens-api:${{ needs.build.outputs.image_tag }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH,MEDIUM
+          cache-dir: ${{ github.workspace }}/.cache/trivy
+      - name: Scan worker image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          image-ref: doculens-worker:${{ needs.build.outputs.image_tag }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH,MEDIUM
+          cache-dir: ${{ github.workspace }}/.cache/trivy
+
+  infra_plan:
+    name: Infrastructure plan
+    needs: [gates, protect]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gates.outputs.checkout_ref }}
+      - name: Require CD configuration
+        env:
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_LOCK_TABLE: ${{ vars.TF_LOCK_TABLE }}
+        run: |
+          set -euo pipefail
+          for name in ROLE_ARN TF_STATE_BUCKET TF_LOCK_TABLE; do
+            eval "value=\${${name}}"
+            if [ -z "${value}" ]; then
+              echo "Missing GitHub Environment variable ${name} on production." >&2
+              exit 1
+            fi
+          done
           case "${ROLE_ARN}" in
             arn:aws:iam::*:role/*) ;;
             *)
@@ -45,18 +224,84 @@ jobs:
               exit 1
               ;;
           esac
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: doculens-cd-production-${{ github.run_id }}
+          role-session-name: doculens-cd-production-plan-${{ github.run_id }}
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: Write production tfvars (no secrets)
+        env:
+          CHROMA_URL: ${{ vars.CHROMA_URL }}
+        run: |
+          set -euo pipefail
+          CHROMA_URL="${CHROMA_URL:-https://chroma.example.internal:8000}"
+          cat > infrastructure/terraform/envs/production/terraform.tfvars <<EOF
+          aws_region                  = "${{ env.AWS_REGION }}"
+          chroma_url                  = "${CHROMA_URL}"
+          create_github_oidc_provider = true
+          create_github_deploy_role   = true
+          github_repository           = "${{ github.repository }}"
+          enable_interface_endpoints  = true
+          enable_vpc_flow_logs        = true
+          EOF
+      - name: Plan
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_LOCK_TABLE: ${{ vars.TF_LOCK_TABLE }}
+          TF_VAR_extra_secret_values: ${{ secrets.TF_VAR_EXTRA_SECRET_VALUES }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/cd/plan_production.sh
+          mkdir -p .local
+          ./scripts/cd/plan_production.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-tfplan-${{ needs.gates.outputs.checkout_ref }}
+          path: |
+            .local/production.tfplan.txt
+            infrastructure/terraform/envs/production/terraform.tfvars
+          retention-days: 30
 
+  deploy:
+    name: Deploy · production
+    needs: [gates, build, security_scan, infra_plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      api_url: ${{ steps.deploy.outputs.api_url }}
+      frontend_url: ${{ steps.deploy.outputs.frontend_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gates.outputs.checkout_ref }}
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: production-images-${{ needs.build.outputs.image_tag }}
+          path: .local/cd
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: doculens-cd-production-deploy-${{ github.run_id }}
       - name: Validate assumed identity
         run: |
           set -euo pipefail
-          aws sts get-caller-identity
           IDENTITY="$(aws sts get-caller-identity --query Arn --output text)"
           echo "Assumed ${IDENTITY}"
           case "${IDENTITY}" in
@@ -66,14 +311,104 @@ jobs:
               exit 1
               ;;
           esac
-
-      - name: Login to Amazon ECR
+      - uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.1.7
         id: ecr
-        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.1.7
-
-      - name: OIDC deploy path ready
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: Load images
         run: |
           set -euo pipefail
-          echo "OIDC authentication succeeded for production."
-          echo "ECR registry: ${{ steps.ecr.outputs.registry }}"
-          echo "Next: push digest-tagged images and UpdateFunctionCode (see docs/deployment.md)."
+          gunzip -c .local/cd/api.tar.gz | docker load
+          gunzip -c .local/cd/worker.tar.gz | docker load
+      - name: Write production tfvars (no secrets)
+        env:
+          CHROMA_URL: ${{ vars.CHROMA_URL }}
+        run: |
+          set -euo pipefail
+          CHROMA_URL="${CHROMA_URL:-https://chroma.example.internal:8000}"
+          cat > infrastructure/terraform/envs/production/terraform.tfvars <<EOF
+          aws_region                  = "${{ env.AWS_REGION }}"
+          chroma_url                  = "${CHROMA_URL}"
+          create_github_oidc_provider = true
+          create_github_deploy_role   = true
+          github_repository           = "${{ github.repository }}"
+          enable_interface_endpoints  = true
+          enable_vpc_flow_logs        = true
+          EOF
+      - name: Deploy backend, worker, frontend, infrastructure
+        id: deploy
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_LOCK_TABLE: ${{ vars.TF_LOCK_TABLE }}
+          TF_VAR_extra_secret_values: ${{ secrets.TF_VAR_EXTRA_SECRET_VALUES }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/cd/deploy_production.sh
+          mkdir -p .local
+          docker tag "doculens-api:${IMAGE_TAG}" "${ECR_REGISTRY}/doculens-production-api:${IMAGE_TAG}"
+          docker tag "doculens-worker:${IMAGE_TAG}" "${ECR_REGISTRY}/doculens-production-worker:${IMAGE_TAG}"
+          SKIP_IMAGE_BUILD=1 ./scripts/cd/deploy_production.sh
+          # shellcheck disable=SC1091
+          source .local/production-deploy.env
+          {
+            echo "api_url=${API_URL}"
+            echo "frontend_url=${FRONTEND_URL}"
+          } >> "${GITHUB_OUTPUT}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-rollback-${{ needs.build.outputs.image_tag }}
+          path: |
+            .local/production-pre-deploy.env
+            .local/production-deploy.env
+          retention-days: 30
+
+  smoke:
+    name: Smoke tests
+    needs: [gates, deploy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gates.outputs.checkout_ref }}
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          python-version: "3.12"
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+            .python-version
+      - name: Install Python workspace
+        run: uv sync --frozen
+      - name: Production functional smoke
+        env:
+          API_URL: ${{ needs.deploy.outputs.api_url }}
+          FRONTEND_URL: ${{ needs.deploy.outputs.frontend_url }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/cd/smoke_production.sh
+          ./scripts/cd/smoke_production.sh
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install workspace
+        run: pnpm install --frozen-lockfile
+      - name: Playwright browsers
+        run: pnpm --filter @doculens/web exec playwright install --with-deps chromium
+      - name: Frontend UI smoke against production
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ needs.deploy.outputs.frontend_url }}
+        run: pnpm --filter @doculens/web exec playwright test --project=smoke

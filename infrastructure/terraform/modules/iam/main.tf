@@ -82,6 +82,14 @@ variable "github_oidc_subjects" {
     ])
     error_message = "github_oidc_subjects must not contain wildcards (*); pin exact repository and environment subjects."
   }
+
+  validation {
+    condition = alltrue([
+      for s in var.github_oidc_subjects :
+      can(regex("^repo:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:environment:(staging|production)$", s))
+    ])
+    error_message = "github_oidc_subjects entries must match repo:ORG/REPO:environment:staging|production (Environment-gated OIDC only)."
+  }
 }
 
 variable "github_oidc_provider_arn" {
@@ -168,22 +176,76 @@ check "github_deploy_role_inputs" {
   }
 }
 
+resource "aws_iam_policy" "lambda_permissions_boundary" {
+  name_prefix = "${var.name_prefix}-lambda-boundary-"
+  description = "Permissions boundary for ${var.name_prefix} Lambda execution roles."
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowAppSurface"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "ec2:CreateNetworkInterface",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DeleteNetworkInterface",
+          "ec2:AssignPrivateIpAddresses",
+          "ec2:UnassignPrivateIpAddresses",
+          "s3:ListBucket",
+          "s3:GetBucketLocation",
+          "s3:HeadBucket",
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:AbortMultipartUpload",
+          "sqs:SendMessage",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:GetQueueUrl",
+          "sqs:ChangeMessageVisibility",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+          "kms:Decrypt",
+          "kms:DescribeKey",
+          "kms:GenerateDataKey",
+          "xray:PutTraceSegments",
+          "xray:PutTelemetryRecords",
+        ]
+        Resource = ["*"]
+      },
+      {
+        Sid      = "DenyPrivilegeEscalation"
+        Effect   = "Deny"
+        Action   = ["iam:*", "organizations:*", "account:*"]
+        Resource = ["*"]
+      },
+    ]
+  })
+  tags = merge(var.tags, { Name = "${var.name_prefix}-lambda-boundary" })
+}
+
 resource "aws_iam_role" "api" {
-  name_prefix        = "${var.name_prefix}-api-"
-  assume_role_policy = local.lambda_assume
-  tags               = merge(var.tags, { Name = "${var.name_prefix}-api-role" })
+  name_prefix          = "${var.name_prefix}-api-"
+  assume_role_policy   = local.lambda_assume
+  permissions_boundary = aws_iam_policy.lambda_permissions_boundary.arn
+  tags                 = merge(var.tags, { Name = "${var.name_prefix}-api-role" })
 }
 
 resource "aws_iam_role" "worker" {
-  name_prefix        = "${var.name_prefix}-worker-"
-  assume_role_policy = local.lambda_assume
-  tags               = merge(var.tags, { Name = "${var.name_prefix}-worker-role" })
+  name_prefix          = "${var.name_prefix}-worker-"
+  assume_role_policy   = local.lambda_assume
+  permissions_boundary = aws_iam_policy.lambda_permissions_boundary.arn
+  tags                 = merge(var.tags, { Name = "${var.name_prefix}-worker-role" })
 }
 
 resource "aws_iam_role" "migrate" {
-  name_prefix        = "${var.name_prefix}-migrate-"
-  assume_role_policy = local.lambda_assume
-  tags               = merge(var.tags, { Name = "${var.name_prefix}-migrate-role" })
+  name_prefix          = "${var.name_prefix}-migrate-"
+  assume_role_policy   = local.lambda_assume
+  permissions_boundary = aws_iam_policy.lambda_permissions_boundary.arn
+  tags                 = merge(var.tags, { Name = "${var.name_prefix}-migrate-role" })
 }
 
 resource "aws_iam_role_policy_attachment" "api_basic" {
@@ -378,11 +440,9 @@ resource "aws_iam_role" "deploy" {
       }
       Action = "sts:AssumeRoleWithWebIdentity"
       Condition = {
+        # Exact Environment-scoped subjects only (ADR-022); never refs/heads/* or environment:*.
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-        }
-        StringLike = {
-          # Exact subjects only (see local.github_subjects); never environment:* or refs/heads/*.
           "token.actions.githubusercontent.com:sub" = local.github_subjects
         }
       }
@@ -446,10 +506,10 @@ resource "aws_iam_role_policy" "deploy" {
         Resource = local.deploy_lambda_function_arns
       },
       {
-        # Staging CD runs terraform plan/apply and syncs the static frontend.
-        # Assumable only via environment-scoped OIDC (ADR-022). Secrets are never
-        # committed to Git. IAM mutations and Secrets Manager are limited to this
-        # environment's name prefix to reduce shared-account blast radius.
+        # Terraform plan/apply + frontend sync. Assumable only via Environment-scoped OIDC.
+        # Resource "*" is required for many control-plane APIs; shared-account blast radius is
+        # reduced by prefixed IAM/Secrets statements, Lambda permissions boundaries, and an
+        # explicit deny on mutating sibling environment prefixes.
         Sid    = "TerraformAndFrontendDeploy"
         Effect = "Allow"
         Action = [
@@ -464,11 +524,45 @@ resource "aws_iam_role_policy" "deploy" {
           "logs:*",
           "rds:*",
           "s3:*",
+          "sns:*",
           "sqs:*",
           "ssm:GetParameter",
           "ssm:GetParameters",
+          "wafv2:*",
+          "xray:GetTraceSummaries",
+          "xray:BatchGetTraces",
         ]
         Resource = ["*"]
+      },
+      {
+        Sid    = "DenySiblingEnvironmentBlastRadius"
+        Effect = "Deny"
+        Action = [
+          "lambda:UpdateFunctionCode",
+          "lambda:UpdateFunctionConfiguration",
+          "lambda:DeleteFunction",
+          "lambda:PublishVersion",
+          "lambda:InvokeFunction",
+          "s3:DeleteObject",
+          "s3:DeleteObjectVersion",
+          "s3:PutBucketPolicy",
+          "s3:DeleteBucket",
+          "rds:DeleteDBInstance",
+          "rds:ModifyDBInstance",
+          "elasticache:DeleteReplicationGroup",
+          "elasticache:ModifyReplicationGroup",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:UpdateSecret",
+        ]
+        NotResource = [
+          "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.name_prefix}-*",
+          "arn:${data.aws_partition.current.partition}:s3:::${var.name_prefix}-*",
+          "arn:${data.aws_partition.current.partition}:s3:::${var.name_prefix}-*/*",
+          "arn:${data.aws_partition.current.partition}:rds:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:db:${var.name_prefix}-*",
+          "arn:${data.aws_partition.current.partition}:elasticache:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:replicationgroup:${var.name_prefix}-*",
+          "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:${var.name_prefix}-*",
+        ]
       },
       {
         Sid    = "DeployIamRead"
@@ -494,23 +588,86 @@ resource "aws_iam_role_policy" "deploy" {
           "iam:DeleteRole",
           "iam:PutRolePolicy",
           "iam:DeleteRolePolicy",
-          "iam:AttachRolePolicy",
-          "iam:DetachRolePolicy",
           "iam:TagRole",
           "iam:UntagRole",
           "iam:UpdateAssumeRolePolicy",
-          "iam:PassRole",
+          "iam:PutRolePermissionsBoundary",
+          "iam:DeleteRolePermissionsBoundary",
+          "iam:CreatePolicy",
+          "iam:DeletePolicy",
+          "iam:CreatePolicyVersion",
+          "iam:DeletePolicyVersion",
+          "iam:TagPolicy",
+          "iam:UntagPolicy",
+        ]
+        Resource = [
+          "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-*",
+          "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:policy/${var.name_prefix}-*",
+        ]
+      },
+      {
+        Sid    = "DeployDenyCreateRoleWithoutBoundary"
+        Effect = "Deny"
+        Action = ["iam:CreateRole"]
+        Resource = [
+          "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-*",
+        ]
+        Condition = {
+          Null = {
+            "iam:PermissionsBoundary" = "true"
+          }
+        }
+      },
+      {
+        Sid    = "DeployRequireLambdaPermissionsBoundary"
+        Effect = "Deny"
+        Action = ["iam:CreateRole", "iam:PutRolePermissionsBoundary"]
+        Resource = [
+          "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-*",
+        ]
+        Condition = {
+          StringNotEquals = {
+            "iam:PermissionsBoundary" = aws_iam_policy.lambda_permissions_boundary.arn
+          }
+        }
+      },
+      {
+        Sid    = "DeployAttachOnlyLambdaServiceRoles"
+        Effect = "Allow"
+        Action = [
+          "iam:AttachRolePolicy",
+          "iam:DetachRolePolicy",
         ]
         Resource = [
           "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-*",
         ]
+        Condition = {
+          ArnEquals = {
+            "iam:PolicyARN" = [
+              "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+              "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole",
+            ]
+          }
+        }
+      },
+      {
+        Sid    = "DeployPassRoleToLambdaOnly"
+        Effect = "Allow"
+        Action = ["iam:PassRole"]
+        Resource = [
+          "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.name_prefix}-*",
+        ]
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "lambda.amazonaws.com"
+          }
+        }
       },
       {
         Sid    = "DeploySecretsManagerPrefixed"
         Effect = "Allow"
         Action = [
           "secretsmanager:CreateSecret",
-          "secretsmanager:DeleteSecret",
           "secretsmanager:DescribeSecret",
           "secretsmanager:GetSecretValue",
           "secretsmanager:PutSecretValue",

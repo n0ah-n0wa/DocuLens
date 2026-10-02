@@ -103,3 +103,13 @@ output "vector_store_status" {
 output "vector_store_notes" {
   value = module.vector_store.notes
 }
+
+output "alarm_topic_arn" {
+  description = "SNS topic for CloudWatch alarms (subscribe operators before go-live)."
+  value       = module.observability.alarm_topic_arn
+}
+
+output "api_waf_acl_arn" {
+  description = "Regional WAFv2 Web ACL ARN for the HTTP API."
+  value       = module.api_gateway.waf_acl_arn
+}

@@ -8,8 +8,20 @@ The pool is deliberately small; connection multiplexing for Lambda is ADR-012.
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from doculens.infrastructure.config import CoreSettings
+from doculens.infrastructure.config import CoreSettings, Environment
 from doculens.infrastructure.persistence.unit_of_work import SqlAlchemyUnitOfWork
+
+
+def _asyncpg_connect_args(settings: CoreSettings) -> dict[str, object]:
+    """Enable TLS for asyncpg when the URL asks for it or the process is deployed."""
+    database_url = settings.database_url.get_secret_value()
+    requires_ssl = "ssl=require" in database_url or settings.app_env in {
+        Environment.STAGING,
+        Environment.PRODUCTION,
+    }
+    if not requires_ssl:
+        return {}
+    return {"ssl": True}
 
 
 class Database:
@@ -22,6 +34,7 @@ class Database:
             pool_recycle=settings.database_pool_recycle_seconds,
             pool_pre_ping=True,
             echo=settings.database_echo,
+            connect_args=_asyncpg_connect_args(settings),
         )
         self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
 
