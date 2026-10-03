@@ -153,7 +153,7 @@ jobs:
       - name: Production build
         run: pnpm run build
       - name: Cache Playwright browsers
-        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('apps/web/package.json', 'pnpm-lock.yaml') }}
@@ -246,7 +246,7 @@ jobs:
           NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:8000
         run: pnpm run build
       - name: Cache Playwright browsers
-        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('apps/web/package.json', 'pnpm-lock.yaml') }}
@@ -312,12 +312,12 @@ jobs:
         with:
           tflint_version: ${{ env.TFLINT_VERSION }}
       - name: Cache Terraform providers
-        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.TF_PLUGIN_CACHE_DIR }}
           key: tf-plugins-${{ runner.os }}-${{ hashFiles('infrastructure/terraform/envs/**/.terraform.lock.hcl') }}
       - name: Cache TFLint plugins
-        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5.0.1
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.tflint.d/plugins
           key: tflint-${{ runner.os }}-${{ env.TFLINT_VERSION }}-${{ hashFiles('infrastructure/terraform/.tflint.hcl') }}
