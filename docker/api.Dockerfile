@@ -5,9 +5,9 @@
 #
 # Determinism: base images and the Dockerfile frontend are digest-pinned; third-party Python
 # deps come only from uv.lock (`uv sync --frozen --no-dev`). Debian security packages that are
-# not yet in the pinned base digest are installed at exact versions (OPENSSL_* args) so rebuilds
-# stay reproducible. Do not run an unpinned `apt-get upgrade`. Dependabot bumps PYTHON_DIGEST /
-# UV_DIGEST / OPENSSL_* when bases or security pins need updates.
+# not yet in the pinned base digest are installed at exact versions (OPENSSL_*/PCRE2_* args) so
+# rebuilds stay reproducible. Do not run an unpinned `apt-get upgrade`. Dependabot bumps
+# PYTHON_DIGEST / UV_DIGEST / OPENSSL_* / PCRE2_* when bases or security pins need updates.
 #
 # The Lambda packaging variant (runtime interface client vs. web adapter) is undecided:
 # docs/planning/open-questions.md OQ-2. This image runs the ASGI app under uvicorn.
@@ -16,8 +16,10 @@ ARG PYTHON_VERSION=3.12.14
 ARG PYTHON_DIGEST=sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e
 ARG UV_VERSION=0.12.17
 ARG UV_DIGEST=sha256:10787c682e4184e4f290de1171fd4703dc63de99221f10fe1c99002ce7fa9acc
-# bookworm-security (CVE-2026-63072, CVE-2026-63076); drop when PYTHON_DIGEST includes these.
+# bookworm-security pins; drop when PYTHON_DIGEST includes these.
 ARG OPENSSL_VERSION=3.0.22-1~deb12u1
+# CVE-2026-103111 (pcre2 out-of-bounds write).
+ARG PCRE2_VERSION=10.42-1+deb12u2
 
 # ---- uv binary (build args expand in FROM, not in COPY --from) --------------------------------
 FROM ghcr.io/astral-sh/uv:${UV_VERSION}@${UV_DIGEST} AS uv
@@ -56,8 +58,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ---- runtime: only the interpreter + production venv; no build tools, no uv --------------------
 FROM python:${PYTHON_VERSION}-slim-bookworm@${PYTHON_DIGEST} AS runtime
 ARG OPENSSL_VERSION
+ARG PCRE2_VERSION
 
-# Non-root user, root-owned application tree, pinned Debian security updates for OpenSSL.
+# Non-root user, root-owned application tree, pinned Debian security updates.
 # HOME is a writable directory under /home/app; /opt/venv stays root-owned and non-writable.
 RUN groupadd --gid 1001 app \
     && useradd --uid 1001 --gid app --home-dir /home/app --shell /usr/sbin/nologin --no-create-home app \
@@ -68,6 +71,7 @@ RUN groupadd --gid 1001 app \
     && apt-get install -y --no-install-recommends \
         "libssl3=${OPENSSL_VERSION}" \
         "openssl=${OPENSSL_VERSION}" \
+        "libpcre2-8-0=${PCRE2_VERSION}" \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
     && rm -rf /usr/local/lib/python*/ensurepip \
     && rm -rf /usr/local/lib/python*/site-packages/pip* \

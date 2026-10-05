@@ -246,7 +246,6 @@ evals/                        Deterministic RAG evaluation harness
 docs/                         Architecture, ADRs, security, deployment, compliance
 .github/workflows/            CI, CD staging, CD production
 scripts/cd/                   Plan / deploy / smoke / rollback helpers
-aws.txt                       Plain-language AWS/GitHub operator checklist
 SPECIFICATIONS.md             Authoritative product + engineering specification
 ```
 
@@ -391,8 +390,7 @@ observability, API Gateway, frontend, ECR, KMS, and a **vector-store placeholder
 wiring only — no Chroma server provisioned). Staging and production are separate roots under
 `infrastructure/terraform/envs/`.
 
-**Operator path:** [`aws.txt`](aws.txt) (plain language) and
-[`docs/deployment.md`](docs/deployment.md).
+**Operator path:** [`docs/deployment.md`](docs/deployment.md).
 
 ---
 
@@ -521,7 +519,6 @@ Prioritised in the spirit of the specification and open questions (not a commitm
 | [`docs/decisions/`](docs/decisions/README.md)                          | Architecture Decision Records                             |
 | [`docs/eval/methodology.md`](docs/eval/methodology.md)                 | RAG eval methodology                                      |
 | [`docs/planning/open-questions.md`](docs/planning/open-questions.md)   | Specification ambiguities (living)                        |
-| [`aws.txt`](aws.txt)                                                   | Operator checklist for first AWS deploy                   |
 
 ## License / portfolio note
 

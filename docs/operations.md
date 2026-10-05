@@ -2,8 +2,8 @@
 
 Runbook for local development, CI/CD, and (when AWS bootstrap is complete) staging/production.
 **Honest status:** application + Terraform + CD workflows are in-repo; a green live AWS deploy still
-requires operator GitHub Environment / OIDC / Chroma / secrets setup. See [`deployment.md`](deployment.md)
-and the workspace operator notes in [`aws.txt`](../aws.txt) if present.
+requires operator GitHub Environment / OIDC / Chroma / secrets setup. See
+[`deployment.md`](deployment.md).
 
 ## Quick orientation
 

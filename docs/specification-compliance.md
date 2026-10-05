@@ -214,7 +214,7 @@ Legend: `[x]` met in-repo with tests · `[~]` partial / designed-not-live · `[ 
 
 ## Highest-priority incomplete items
 
-1. **Operator AWS + GitHub Environment setup** so staging CD can go green (`aws.txt`, `deployment.md`).
+1. **Operator AWS + GitHub Environment setup** so staging CD can go green (`deployment.md`).
 2. **OQ-1** Chroma hosting for deployed environments.
 3. **§86** Enable GitHub branch protection on `main`.
 4. **OQ-3 / §24** PDF download and page navigation for citations.
