@@ -285,12 +285,14 @@ async def test_processing_timeout_retries_before_visibility_expires(
             return await real.fail_permanently(document_id, reason=reason)
 
     world.worker._processor = SlowProcessor()  # type: ignore[assignment]  # noqa: SLF001
+    original_timeout = world.worker._processing_timeout  # noqa: SLF001
     world.worker._processing_timeout = 0.05  # noqa: SLF001
 
     assert await world.worker.run_once() is True
     assert world.document(document.id).processing_status is ProcessingStatus.UPLOADED
 
     world.worker._processor = real  # noqa: SLF001
+    world.worker._processing_timeout = original_timeout  # noqa: SLF001
     world.advance(1.1)
     assert await world.worker.run_once() is True
     assert world.document(document.id).processing_status is ProcessingStatus.READY

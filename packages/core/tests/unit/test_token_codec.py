@@ -61,6 +61,16 @@ def test_expired_tokens_are_reported_as_expired(codec: JwtTokenCodec) -> None:
         codec.decode(token, expected_type=TokenType.ACCESS)
 
 
+def test_expired_refresh_can_be_decoded_when_expiry_is_skipped(codec: JwtTokenCodec) -> None:
+    claims = _claims(TokenType.REFRESH, expires_at=datetime.now(UTC) - timedelta(hours=1))
+    token = codec.encode(claims)
+
+    decoded = codec.decode(token, expected_type=TokenType.REFRESH, verify_expiry=False)
+
+    assert decoded.token_id == claims.token_id
+    assert decoded.subject == claims.subject
+
+
 def test_wrong_issuer_or_audience_is_rejected(codec: JwtTokenCodec) -> None:
     other_issuer = JwtTokenCodec(secret=SECRET, issuer="someone-else", audience="doculens-api")
     other_audience = JwtTokenCodec(secret=SECRET, issuer="doculens", audience="other-api")

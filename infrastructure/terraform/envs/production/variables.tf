@@ -20,9 +20,14 @@ variable "az_count" {
 }
 
 variable "nat_gateway_count" {
-  description = "Ignored in production main.tf (forced to az_count for HA). Kept for tfvars compatibility."
+  description = "NAT gateways for production HA (raised to az_count when lower)."
   type        = number
   default     = 3
+
+  validation {
+    condition     = var.nat_gateway_count >= 2 && var.nat_gateway_count <= 3
+    error_message = "Production nat_gateway_count must be 2 or 3."
+  }
 }
 
 variable "enable_interface_endpoints" {

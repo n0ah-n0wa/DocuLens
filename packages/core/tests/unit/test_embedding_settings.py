@@ -36,6 +36,8 @@ DEPLOYED = {
     "redis_url": "rediss://redis.internal:6379/0",
     "storage_expected_bucket_owner": "123456789012",
     "chroma_api_token": SecretStr("chroma-deployed-token"),
+    "max_file_size_mb": 10,
+    "llm_timeout_seconds": 20.0,
 }
 
 
@@ -111,6 +113,7 @@ def test_deployed_environments_refuse_the_fake_provider_and_plain_http() -> None
         embedding_provider=EmbeddingProviderKind.OPENAI,
         llm_provider=LLMProviderKind.OPENAI,
         embedding_api_key=SecretStr("sk-production"),
+        llm_api_key=SecretStr("sk-llm"),
     )
     assert settings.embedding_provider is EmbeddingProviderKind.OPENAI
     assert "sk-production" not in repr(settings)

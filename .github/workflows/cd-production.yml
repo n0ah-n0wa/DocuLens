@@ -236,9 +236,33 @@ jobs:
       - name: Write production tfvars (no secrets)
         env:
           CHROMA_URL: ${{ vars.CHROMA_URL }}
+          CORS_ALLOW_ORIGINS: ${{ vars.CORS_ALLOW_ORIGINS }}
         run: |
           set -euo pipefail
-          CHROMA_URL="${CHROMA_URL:-https://chroma.example.internal:8000}"
+          if [[ -z "${CHROMA_URL:-}" || "${CHROMA_URL}" == *"chroma.example"* ]]; then
+            echo "Set GitHub Environment variable CHROMA_URL to a real https:// Chroma endpoint (OQ-1)." >&2
+            exit 1
+          fi
+          if [[ ! "${CHROMA_URL}" =~ ^https:// ]]; then
+            echo "CHROMA_URL must use https://" >&2
+            exit 1
+          fi
+          CORS_LINE=""
+          if [[ -n "${CORS_ALLOW_ORIGINS:-}" ]]; then
+            IFS=',' read -r -a ORIGINS <<< "${CORS_ALLOW_ORIGINS}"
+            QUOTED=""
+            for o in "${ORIGINS[@]}"; do
+              o="$(echo "${o}" | xargs)"
+              [[ -z "${o}" ]] && continue
+              QUOTED="${QUOTED}${QUOTED:+, }\"${o}\""
+            done
+            if [[ -n "${QUOTED}" ]]; then
+              CORS_LINE="cors_allow_origins = [${QUOTED}]"
+            fi
+          fi
+          if [[ -z "${CORS_LINE}" ]]; then
+            echo "WARN: CORS_ALLOW_ORIGINS unset — browsers cannot call the API until set to the CloudFront URL." >&2
+          fi
           cat > infrastructure/terraform/envs/production/terraform.tfvars <<EOF
           aws_region                  = "${{ env.AWS_REGION }}"
           chroma_url                  = "${CHROMA_URL}"
@@ -247,6 +271,7 @@ jobs:
           github_repository           = "${{ github.repository }}"
           enable_interface_endpoints  = true
           enable_vpc_flow_logs        = true
+          ${CORS_LINE}
           EOF
       - name: Plan
         env:
@@ -325,9 +350,33 @@ jobs:
       - name: Write production tfvars (no secrets)
         env:
           CHROMA_URL: ${{ vars.CHROMA_URL }}
+          CORS_ALLOW_ORIGINS: ${{ vars.CORS_ALLOW_ORIGINS }}
         run: |
           set -euo pipefail
-          CHROMA_URL="${CHROMA_URL:-https://chroma.example.internal:8000}"
+          if [[ -z "${CHROMA_URL:-}" || "${CHROMA_URL}" == *"chroma.example"* ]]; then
+            echo "Set GitHub Environment variable CHROMA_URL to a real https:// Chroma endpoint (OQ-1)." >&2
+            exit 1
+          fi
+          if [[ ! "${CHROMA_URL}" =~ ^https:// ]]; then
+            echo "CHROMA_URL must use https://" >&2
+            exit 1
+          fi
+          CORS_LINE=""
+          if [[ -n "${CORS_ALLOW_ORIGINS:-}" ]]; then
+            IFS=',' read -r -a ORIGINS <<< "${CORS_ALLOW_ORIGINS}"
+            QUOTED=""
+            for o in "${ORIGINS[@]}"; do
+              o="$(echo "${o}" | xargs)"
+              [[ -z "${o}" ]] && continue
+              QUOTED="${QUOTED}${QUOTED:+, }\"${o}\""
+            done
+            if [[ -n "${QUOTED}" ]]; then
+              CORS_LINE="cors_allow_origins = [${QUOTED}]"
+            fi
+          fi
+          if [[ -z "${CORS_LINE}" ]]; then
+            echo "WARN: CORS_ALLOW_ORIGINS unset — browsers cannot call the API until set to the CloudFront URL." >&2
+          fi
           cat > infrastructure/terraform/envs/production/terraform.tfvars <<EOF
           aws_region                  = "${{ env.AWS_REGION }}"
           chroma_url                  = "${CHROMA_URL}"
@@ -336,6 +385,7 @@ jobs:
           github_repository           = "${{ github.repository }}"
           enable_interface_endpoints  = true
           enable_vpc_flow_logs        = true
+          ${CORS_LINE}
           EOF
       - name: Deploy backend, worker, frontend, infrastructure
         id: deploy

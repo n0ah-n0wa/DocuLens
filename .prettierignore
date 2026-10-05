@@ -11,8 +11,10 @@ build/
 playwright-report/
 test-results/
 .terraform/
+.terraform.d/
 *.tfstate*
 .local/
+.cache/
 
 # Python is formatted by ruff
 *.py

@@ -558,6 +558,33 @@ resource "aws_cloudfront_response_headers_policy" "web" {
   }
 }
 
+resource "aws_cloudfront_function" "spa_deep_links" {
+  name    = "${var.name_prefix}-spa-deep-links"
+  runtime = "cloudfront-js-2.0"
+  comment = "Rewrite static-export dynamic shells (chat/documents/collections UUIDs)"
+  publish = true
+  code    = <<-EOF
+    function handler(event) {
+      var request = event.request;
+      var uri = request.uri;
+      // Next.js output:export with trailingSlash emits /chat/_/index.html etc.
+      if (uri.match(/^\/chat\/(?!_\/)[^/]+\/?$/)) {
+        request.uri = "/chat/_/index.html";
+        return request;
+      }
+      if (uri.match(/^\/documents\/(?!upload\/)(?!_\/)[^/]+\/?$/)) {
+        request.uri = "/documents/_/index.html";
+        return request;
+      }
+      if (uri.match(/^\/collections\/(?!_\/)[^/]+\/?$/)) {
+        request.uri = "/collections/_/index.html";
+        return request;
+      }
+      return request;
+    }
+  EOF
+}
+
 resource "aws_cloudfront_distribution" "web" {
   enabled             = true
   is_ipv6_enabled     = true
@@ -589,6 +616,11 @@ resource "aws_cloudfront_distribution" "web" {
         forward = "none"
       }
     }
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.spa_deep_links.arn
+    }
   }
 
   logging_config {
@@ -597,7 +629,7 @@ resource "aws_cloudfront_distribution" "web" {
     prefix          = "cloudfront/"
   }
 
-  # SPA-style fallback for client-side routes under static export.
+  # Soft fallback for unknown client routes; prefer the CloudFront Function for UUID shells.
   custom_error_response {
     error_code            = 403
     response_code         = 200

@@ -80,8 +80,16 @@ def _get_secret_value(secret_id: str) -> str:
 
 
 def _merge_into_environ(payload: dict[str, Any]) -> None:
+    """Apply secret keys; existing non-empty environment values win (explicit Lambda overrides).
+
+    Empty-string placeholders in the process environment do not block hydration — Terraform
+    sometimes injects blank reserved names that would otherwise leave JWT/DB URLs unset.
+    """
     for key, value in payload.items():
-        if not key or key in os.environ or value is None:
+        if not key or value is None:
+            continue
+        existing = os.environ.get(key)
+        if existing is not None and existing != "":
             continue
         if isinstance(value, (dict, list)):
             os.environ[key] = json.dumps(value)

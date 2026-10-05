@@ -179,6 +179,21 @@ class InMemoryDocumentRepository:
         ]
         return sorted(owned, key=lambda d: (d.created_at, d.id.hex))
 
+    async def list_processing_stragglers(
+        self,
+        *,
+        status: ProcessingStatus,
+        older_than: datetime,
+        limit: int = 50,
+    ) -> list[Document]:
+        matches = [
+            d
+            for d in self._store.documents.values()
+            if d.processing_status is status and d.updated_at < older_than
+        ]
+        matches.sort(key=lambda d: (d.updated_at, d.id.hex))
+        return matches[: max(1, min(limit, 500))]
+
     async def list_in_collection(self, owner_id: UUID, collection_id: UUID) -> list[Document]:
         return [d for d in await self.list_for_owner(owner_id) if d.collection_id == collection_id]
 

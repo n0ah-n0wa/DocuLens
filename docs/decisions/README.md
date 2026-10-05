@@ -35,8 +35,8 @@ that later readers understand why the system looks the way it does.
 | [ADR-005](ADR-005-llm-provider.md)                | LLM provider                                   | Accepted (provisional) | OQ-17: port and first adapter fixed, vendor open         |
 | [ADR-006](ADR-006-async-processing.md)            | Async processing architecture                  | Accepted               | OQ-2 open; OQ-13, OQ-27 provisional                      |
 | [ADR-007](ADR-007-authentication-strategy.md)     | Authentication strategy                        | Accepted               | OQ-19 (cookie transport) still open; ADR-021 provisional |
-| ADR-008                                           | AWS deployment architecture                    | Pending                | OQ-1, OQ-3, OQ-3b, OQ-19, OQ-23                          |
-| ADR-009                                           | RAG evaluation strategy                        | Pending                | OQ-22                                                    |
+| [ADR-008](ADR-008-aws-deployment-architecture.md) | AWS deployment architecture                    | Accepted (provisional) | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-21; OQ-23 provisional |
+| [ADR-009](ADR-009-rag-evaluation-strategy.md)     | RAG evaluation strategy                        | Accepted               | OQ-22 real-provider schedule optional                    |
 | [ADR-010](ADR-010-repository-tooling.md)          | Repository tooling                             | Accepted               | —                                                        |
 | [ADR-011](ADR-011-job-enqueue-consistency.md)     | Document row / job enqueue consistency         | Accepted (provisional) | OQ-27 via ADR-006 option A                               |
 | [ADR-012](ADR-012-lambda-database-connections.md) | Database connection management for Lambda      | Proposed               | OQ-28 (decision requested)                               |

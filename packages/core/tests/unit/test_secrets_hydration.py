@@ -60,6 +60,35 @@ def test_hydrate_merges_json_without_overriding_existing(
     assert os.environ["REDIS_URL"] == "rediss://redis:6379/0"
 
 
+def test_hydrate_overwrites_empty_environment_placeholders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_hydration_for_tests()
+    monkeypatch.setenv("APP_SECRETS_ARN", "arn:aws:secretsmanager:eu-central-1:1:secret:app")
+    monkeypatch.setenv("JWT_SECRET", "")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    fake = _FakeSecretsClient(
+        {
+            "arn:aws:secretsmanager:eu-central-1:1:secret:app": json.dumps(
+                {
+                    "JWT_SECRET": "from-secret",
+                    "DATABASE_URL": "postgresql+asyncpg://u:p@db/db",
+                }
+            )
+        }
+    )
+    monkeypatch.setattr(
+        "doculens.infrastructure.secrets.boto3.client",
+        lambda *_a, **_k: fake,
+    )
+
+    hydrate_secrets_into_environ(force=True)
+
+    assert os.environ["JWT_SECRET"] == "from-secret"  # noqa: S105 - fixture value
+    assert os.environ["DATABASE_URL"] == "postgresql+asyncpg://u:p@db/db"
+
+
 def test_hydrate_loads_chroma_token_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_hydration_for_tests()
     monkeypatch.delenv("APP_SECRETS_ARN", raising=False)

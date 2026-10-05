@@ -38,7 +38,11 @@ def test_values_are_read_from_the_environment(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("STORAGE_ENCRYPTION", "AES256")
     monkeypatch.setenv("STORAGE_REGION", "eu-central-1")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "sk-embed-test")
     monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("LLM_API_KEY", "sk-llm-test")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "20")
+    monkeypatch.setenv("MAX_FILE_SIZE_MB", "10")
     monkeypatch.setenv("CHROMA_URL", "https://chroma.internal:8000")
     monkeypatch.setenv("QUEUE_BACKEND", "sqs")
     monkeypatch.setenv(
@@ -117,7 +121,9 @@ DEPLOYED_BASE = {
     "storage_region": "eu-central-1",
     "storage_encryption": "AES256",
     "embedding_provider": "openai",
+    "embedding_api_key": SecretStr("sk-embed"),
     "llm_provider": "openai",
+    "llm_api_key": SecretStr("sk-llm"),
     "chroma_url": "https://chroma.internal:8000",
     "queue_backend": "sqs",
     "queue_sqs_url": "https://sqs.eu-central-1.amazonaws.com/123456789012/doculens",
@@ -127,6 +133,8 @@ DEPLOYED_BASE = {
     "redis_url": "rediss://redis.internal:6379/0",
     "storage_expected_bucket_owner": "123456789012",
     "chroma_api_token": SecretStr("chroma-deployed-token"),
+    "max_file_size_mb": 10,
+    "llm_timeout_seconds": 20.0,
 }
 
 

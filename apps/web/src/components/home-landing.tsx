@@ -42,8 +42,8 @@ export function HomeLanding() {
       <div className="space-y-3">
         <h1 className="text-3xl font-semibold tracking-tight">DocuLens</h1>
         <p className="text-lg text-slate-600">
-          Upload PDF documents, organise them into collections and ask questions that are answered
-          with citable evidence.
+          Grounded document Q&amp;A: upload PDFs, organise collections, and get answers with
+          inspectable source citations — not free-form invention.
         </p>
       </div>
       <div className="flex flex-wrap gap-3">

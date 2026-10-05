@@ -28,6 +28,7 @@ DEPLOYED = {
     "storage_region": "eu-central-1",
     "storage_encryption": StorageEncryption.AES256,
     "embedding_provider": EmbeddingProviderKind.OPENAI,
+    "embedding_api_key": SecretStr("sk-embed"),
     "chroma_url": "https://chroma.internal:8000",
     "queue_backend": "sqs",
     "queue_sqs_url": "https://sqs.eu-central-1.amazonaws.com/123456789012/doculens",
@@ -37,6 +38,8 @@ DEPLOYED = {
     "redis_url": "rediss://redis.internal:6379/0",
     "storage_expected_bucket_owner": "123456789012",
     "chroma_api_token": SecretStr("chroma-deployed-token"),
+    "max_file_size_mb": 10,
+    "llm_timeout_seconds": 20.0,
 }
 
 
@@ -105,5 +108,10 @@ def test_deployed_environments_refuse_the_fake_and_plain_http() -> None:
             **DEPLOYED, llm_provider=LLMProviderKind.OPENAI, llm_api_base_url="http://llm.internal"
         )
 
-    settings = _settings(**DEPLOYED, llm_provider=LLMProviderKind.OPENAI)
+    with pytest.raises(ValidationError, match="LLM_API_KEY is required"):
+        _settings(**DEPLOYED, llm_provider=LLMProviderKind.OPENAI, llm_api_key=None)
+
+    settings = _settings(
+        **DEPLOYED, llm_provider=LLMProviderKind.OPENAI, llm_api_key=SecretStr("k")
+    )
     assert settings.llm_api_base_url == "https://api.openai.com/v1"

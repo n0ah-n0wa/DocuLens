@@ -19,7 +19,10 @@ names the sections it follows from. Nothing here describes implementation detail
 
 ## 1. System context
 
-**Planned** (the web app, API and worker skeletons exist; no data flow is implemented yet).
+**Implemented** locally and in CI: authenticated upload → async processing → hybrid RAG with
+citations, conversations, quotas, and the Next.js UI. **Not live:** AWS staging/production
+deploy (operator setup still required; Chroma hosting **OQ-1**). See
+[`specification-compliance.md`](specification-compliance.md).
 
 ```mermaid
 flowchart LR
@@ -55,28 +58,30 @@ Principles the specification fixes (§1, §4, §90):
 | ---------------------- | -------------------------- | ------------------------------------- | ---------------------------------------------------------------------- |
 | Core                   | `packages/core`            | `doculens-core` / `doculens`          | domain, application and infrastructure layers                          |
 | API                    | `apps/api`                 | `doculens-api` / `doculens_api`       | FastAPI: health, auth, users, collections, documents, conversations    |
-| Worker                 | `services/document-worker` | `doculens-worker` / `doculens_worker` | queue-driven interface layer (entrypoint only)                         |
+| Worker                 | `services/document-worker` | `doculens-worker` / `doculens_worker` | queue-driven document pipeline (Lambda/RIC + local entrypoints)        |
 | Web                    | `apps/web`                 | `@doculens/web`                       | Next.js app: auth, documents/collections, grounded chat with citations |
 | Shared contracts       | `packages/shared-types`    | `@doculens/shared-types`              | TypeScript API contracts (errors, auth, documents, collections)        |
-| Infrastructure         | `infrastructure/terraform` | —                                     | staging and production roots (no resources yet)                        |
+| Infrastructure         | `infrastructure/terraform` | —                                     | staging/production roots + modules (code complete; live apply pending) |
 | Images and local stack | `docker/`                  | —                                     | API and worker images; PostgreSQL, Redis, Chroma                       |
 
 The layout adapts §71 as recorded in [ADR-001](decisions/ADR-001-backend-architecture.md): the
 framework-free core is its own package so that packaging itself enforces the §72 boundary.
 
-**Planned** components not yet present: remaining hosting open questions (`OQ-1`, `OQ-2`).
-Staging and production CD are implemented ([`deployment.md`](deployment.md)).
+**Open hosting items:** Chroma in AWS (**OQ-1**), Lambda limits vs large PDFs (**OQ-2**), SSE via
+API Gateway (**OQ-3b**). CD **workflows** exist ([`deployment.md`](deployment.md)); a green live
+staging deploy still needs GitHub Environment variables and AWS bootstrap.
 Terraform modules (§57) live under `infrastructure/terraform/`. The RAG evaluation harness lives
 under `evals/` (§62–§63) and runs deterministically in CI via `make eval` / `uv run python -m evals`,
 writing machine-readable results to `docs/eval/latest.json`. Methodology and limitations:
-[`docs/eval/methodology.md`](eval/methodology.md).
+[`docs/eval/methodology.md`](eval/methodology.md). Compliance matrix:
+[`specification-compliance.md`](specification-compliance.md).
 
 ---
 
 ## 3. Ownership boundaries
 
-**Planned.** Each concern has exactly one owner; the table is the reference when a change could go
-in more than one place.
+**Implemented** (enforced by package layout and `test_architecture.py`). Each concern has exactly
+one owner; the table is the reference when a change could go in more than one place.
 
 | Concern                                                     | Owner                                              | Follows from |
 | ----------------------------------------------------------- | -------------------------------------------------- | ------------ |
@@ -113,20 +118,6 @@ no-store`). The OpenAPI document and interactive docs are served locally and dis
 environments unless explicitly enabled. Start-up and shutdown run through the application
 lifespan, which is where connection pools and clients will be opened and closed.
 
-**Planned** (§9, §33–§36, §40–§44, §53):
-
-- The backend never relies on frontend filtering for authorization; every request is authorized
-  server-side against the authenticated user.
-- The web app owns: authentication screens and session handling, dashboard, document view, chat
-  with citations displayed separately from the answer text, explicit `IDLE / LOADING / SUCCESS /
-ERROR / EMPTY` states, responsive layout and WCAG-oriented accessibility.
-- The API owns all validation, quota and rate-limit enforcement, and AI orchestration.
-- Answer text, quoted citation text and document metadata are untrusted content produced from
-  documents or the LLM; the web app renders them as text, never as HTML (§53, XSS).
-- The web app must let the user open the source document and navigate to the cited page (§24).
-  The transport for that (serving the PDF) is part of `OQ-3`, because the API Gateway and Lambda
-  payload limits that constrain uploads constrain downloads equally.
-
 **Implemented (shell + documents + chat):** login and registration screens; authenticated layout;
 dashboard; document list/search/upload/detail with processing-status polling; collection
 CRUD; conversation list/create/delete, message history, question composer with SSE streaming
@@ -134,16 +125,17 @@ CRUD; conversation list/create/delete, message history, question composer with S
 citations panel that only appears after the stream's final persisted answer; citation filenames and
 document links are resolved only from the documents API (never invented on the client); a
 central API client with multipart upload support, §35 error parsing and one-shot refresh retry;
-Vitest coverage for client/session/validation/citation/SSE helpers (ADR-021).
+Vitest coverage for client/session/validation/citation/SSE helpers (ADR-021). Server-side
+authorization, quotas and rate limits, validation, and AI orchestration live in the API/core —
+never in the frontend. Answer text, citation quotes and filenames are rendered as text, never HTML.
 
-**Pending:**
+**Not implemented / pending:**
 
-- `OQ-19` — frontend hosting/rendering mode and production token transport (cookie refresh);
-  provisional in-memory access + `sessionStorage` refresh until then (ADR-021).
-- `OQ-3` — upload and download paths under API Gateway and Lambda payload limits; cited-page
-  PDF navigation in the UI waits on document download/view.
-- `OQ-3b` — whether answer streaming (Server-Sent Events, §44) can pass through API Gateway.
-- `OQ-10` — separate metadata search versus semantic search endpoints.
+- Cited-page PDF open/navigate in the UI (§24) — needs download/view transport (`OQ-3`).
+- `OQ-19` — production cookie refresh / CSRF; provisional in-memory access + `sessionStorage`
+  refresh (ADR-021).
+- `OQ-3b` — whether SSE can pass through API Gateway when deployed.
+- `OQ-10` — semantic `POST /search` (filename `?q=` exists).
 
 ---
 
@@ -187,16 +179,24 @@ implement them, and only the composition roots (`apps/api`, `services/document-w
 concrete adapter is bound. This matches §4 (`API → Application → Domain → Infrastructure adapters →
 External services`) read as a call chain, with the import direction pointing inward.
 
+### Adding an adapter (reviewer sketch)
+
+1. Declare or reuse a `Protocol` in `doculens.application` (or domain for domain-owned ports).
+2. Implement a **fake** in `doculens.testing` / infrastructure for unit tests.
+3. Implement the real adapter under `doculens.infrastructure` (HTTP, SQL, AWS SDK, …).
+4. Wire the choice in the composition root from validated settings (`EMBEDDING_PROVIDER`, …).
+5. Extend unit tests + an integration test if the adapter talks to a real dependency.
+6. Never import FastAPI/boto3/Chroma from `domain` or `application` — `test_architecture.py` fails CI.
+
 Enforcement (implemented): `doculens-core` declares no web framework dependency, and
 `packages/core/tests/unit/test_architecture.py` scans `domain` and `application` for forbidden
-imports on every CI run. Extending the scan to `infrastructure → application` internals is planned
-together with the first adapters.
+imports on every CI run.
 
-**Planned** ports (§15, §18, §48, §73–§74): `LLMProvider`, `EmbeddingProvider`, `RerankerProvider`,
-a vector-store/retriever abstraction, object storage, a job queue, repositories, rate limiting and
-usage tracking. LangChain, when used, stays inside `infrastructure` as an integration layer (§73).
+**Implemented** ports and adapters: `LLMProvider`, `EmbeddingProvider`, `RerankerProvider`
+(`none`/`fake` only), vector store / retrievers, object storage, job queue, repositories, unit of
+work, rate limiting and usage tracking. LangChain, when used, stays inside `infrastructure` (§73).
 Configuration is loaded and validated once at start-up by the composition root; a deployed
-environment with unsafe values fails the process with a clear message (§70, implemented).
+environment with unsafe values fails the process with a clear message (§70).
 
 ---
 
@@ -212,8 +212,8 @@ count), `EXTRACTING` (page-level text with empty-page detection and document met
 and stable ids), `EMBEDDING` (batched, retried provider calls with usage accounting) and
 `INDEXING` (owner-scoped upsert under chunk-derived vector ids, stale vectors removed) to
 `READY`, with compare-and-set state transitions, resumable and idempotent runs, and an
-isolated, time- and memory-bounded parser process. The worker's `process <document-id>`
-command drives it until the queue consumer exists.
+isolated, time- and memory-bounded parser process. The worker consumes the configured queue
+(`memory` / Redis / SQS) and also exposes `process <document-id>` for a single document.
 
 **Implemented** (§29, §31, §32, [ADR-019](decisions/ADR-019-document-lifecycle.md),
 [ADR-020](decisions/ADR-020-document-upload-transport.md)): upload (`POST /documents`, direct
@@ -274,12 +274,11 @@ stateDiagram-v2
   ordering and guarantees are in §9 of this document.
 - **Re-indexing** never creates duplicate vectors (§32).
 
-**Pending:**
+**Pending / provisional:**
 
-- `OQ-3` — upload path (direct multipart versus presigned S3 upload), the download path for
-  viewing documents, and therefore whether validation happens before or after S3 persistence.
-- `OQ-6` — behaviour on duplicate uploads (content hash scope and response).
-- `OQ-14` — representation of pages with no extractable text and the outcome for empty PDFs.
+- `OQ-3` — download/view path; presigned upload remains the upgrade for large Lambda payloads
+  (direct multipart is provisional under ADR-020 with a deployed size cap).
+- `OQ-6` / `OQ-14` — provisionally decided in ADR-015 (duplicate 409; empty-text pages stored).
 
 ---
 
@@ -309,7 +308,7 @@ blocks first and the question last.
 **Implemented** (§21, §73, [ADR-005](decisions/ADR-005-llm-provider.md)): the `LLMProvider`
 port (`generate` over ordered chat messages, structured errors, usage with input and output
 tokens), an OpenAI-compatible chat-completions adapter with timeouts and bounded retries, and a
-deterministic fake; nothing calls it yet, the answering use case (§21) is the next phase.
+deterministic fake used by local/CI; the answering use case calls it for sync and SSE asks.
 
 **Implemented** (§15, §73, [ADR-004](decisions/ADR-004-embedding-provider.md)): the
 `EmbeddingProvider` port (`embed_documents`, `embed_query`, structured errors, usage accounting),
@@ -332,11 +331,11 @@ ranking), optional reranking behind the `RerankerProvider` port (top-N candidate
 evidence out, bounded by a timeout and falling back to the retrieval order when the provider is
 disabled or unavailable) and context assembly (chunk and character budgets, per-document slots for source
 diversity, numbered items). Evidence is structured (`document_id`, `chunk_id`, `page_number`,
-text, score, metadata) and its text is read from PostgreSQL, never from the vector copy. A hosted
-reranking adapter, answer generation and citations are not implemented.
+text, score, metadata) and its text is read from PostgreSQL, never from the vector copy. A
+**hosted** production reranker is not implemented (`RERANKER_PROVIDER` is `none` or `fake`).
 
-**Planned** (§16–§27, §37–§39, §44, §74). The pipeline and its guarantees are fixed by the
-specification; the diagram includes the controls that wrap it.
+**Implemented** pipeline controls (§16–§27, §37–§39, §44, §74). Dedicated walkthrough:
+[`rag.md`](rag.md). The diagram includes the controls that wrap retrieval and answering:
 
 ```mermaid
 flowchart LR
@@ -376,20 +375,15 @@ flowchart LR
   is independently testable, and RAG quality is measured by an evaluation harness with a curated
   dataset covering direct, indirect, multi-document and absent answers (§62–§63).
 
-**Pending:**
+**Pending / residual:**
 
-- `OQ-17` — which LLM, embedding and reranker providers are used (and therefore tokenizer and
-  pricing, `OQ-16`, `OQ-11`).
-- `OQ-4` — a language-specific full-text configuration for keyword retrieval (provisionally
-  `simple`).
-- `OQ-8` — how a conversation's document scope is modelled.
-- `OQ-18` — how partial answers from a failed stream are persisted, and where the rewritten query
-  is kept for auditability.
-- `OQ-22` — how often the evaluation suite runs and whether it gates CI.
-- `OQ-29` — where the insufficient-evidence outcome is decided: by a retrieval-score threshold
-  before calling the LLM, by the LLM under instruction, or both.
-- `OQ-30` — how citations are attributed to the answer: whether the LLM must reference context
-  items explicitly or every context chunk that survived reranking is cited.
+- `OQ-17` — production vendor for LLM / embeddings / reranking (ports and OpenAI-compatible
+  adapters exist; hosted reranker does not).
+- `OQ-4` — language-specific FTS (provisionally `simple`).
+- `OQ-8` — conversation-persisted multi-document scope (ask-time scope is implemented).
+- `OQ-18` — streaming partial-persist policy (provisional: persist only on success).
+- `OQ-22` — real-provider eval schedule (offline suite already gates CI).
+- `OQ-29` / `OQ-30` — decided in ADR-018 (empty-context short-circuit + `[n]` validation).
 
 ---
 
@@ -400,7 +394,7 @@ API after commit (ADR-011), `DocumentJobWorker` with visibility leases, bounded 
 backoff, dead-lettering that marks the document `FAILED`, processing timeouts inside the lease,
 poison-message handling, and idempotent CAS processing (ADR-006, ADR-015).
 
-**Planned** (reconciliation sweep for orphaned `UPLOADED` rows — ADR-011):
+**Implemented** (worker Lambda reconciles orphaned `UPLOADED` rows on each batch — ADR-011):
 
 ```mermaid
 sequenceDiagram
@@ -439,12 +433,12 @@ sequenceDiagram
 - The originating request ID travels in the job so worker logs and traces correlate with the
   upload request (§36, §52).
 
-**Pending:**
+**Pending / residual:**
 
-- `OQ-2` — worker compute (Lambda container versus ECS) given Lambda's execution limits and the
-  largest allowed documents, and the corresponding container base image.
-- `OQ-27` — how the row commit and the enqueue are kept consistent when one of them fails
-  ([ADR-011, proposed](decisions/ADR-011-job-enqueue-consistency.md)).
+- `OQ-2` — ECS remains an option if Lambda 15-minute / storage limits bite (Lambda RIC + SQS is
+  the provisional path).
+- `OQ-27` — provisional commit-then-enqueue + straggler reconcile
+  ([ADR-011](decisions/ADR-011-job-enqueue-consistency.md)); transactional outbox is the upgrade.
 
 ---
 
@@ -463,35 +457,32 @@ integration tests that run against a real PostgreSQL. Object storage is behind t
 port with S3 and filesystem adapters ([ADR-014](decisions/ADR-014-object-storage.md)) and its own
 readiness probe. Local PostgreSQL 17, Redis 7.4, ChromaDB 1.5 and MinIO run via docker compose.
 
-**Planned** (§7, §45–§47):
+**Implemented** schema (see [`database.md`](database.md) for columns and migrations):
 
 ```mermaid
 erDiagram
-    USER ||--o{ COLLECTION : owns
-    USER ||--o{ DOCUMENT : owns
-    USER ||--o{ CONVERSATION : owns
-    USER ||--o{ REFRESH_TOKEN : holds
-    USER ||--o{ USAGE_RECORD : accrues
-    COLLECTION ||--o{ DOCUMENT : groups
-    COLLECTION ||--o{ CONVERSATION : scopes
-    DOCUMENT ||--o{ DOCUMENT_PAGE : has
-    DOCUMENT ||--o{ DOCUMENT_CHUNK : has
-    DOCUMENT_PAGE ||--o{ DOCUMENT_CHUNK : contains
-    CONVERSATION ||--o{ MESSAGE : has
-    MESSAGE ||--o{ CITATION : supports
-    DOCUMENT ||--o{ CITATION : referenced_by
-    DOCUMENT_CHUNK ||--o{ CITATION : quotes
+    users ||--o{ collections : owns
+    users ||--o{ documents : owns
+    users ||--o{ conversations : owns
+    users ||--o{ refresh_tokens : holds
+    users ||--o{ usage_events : accrues
+    collections ||--o{ documents : groups
+    collections ||--o{ conversations : scopes
+    documents ||--o{ document_pages : has
+    documents ||--o{ document_chunks : has
+    document_pages ||--o{ document_chunks : contains
+    conversations ||--o{ messages : has
+    messages ||--o{ citations : supports
+    documents ||--o{ citations : referenced_by
+    document_chunks ||--o{ citations : quotes
 ```
 
-Entities and fields for `USER`, `COLLECTION`, `DOCUMENT`, `DOCUMENT_PAGE`, `DOCUMENT_CHUNK`,
-`CONVERSATION`, `MESSAGE` and `CITATION` are exactly those of §7.1–§7.8. Messages are immutable
-after creation (§28). Two records are not listed in §7 but follow from other sections, because
-Redis may not be authoritative for persistent state (§47):
+Entities and fields for users, collections, documents, pages, chunks, conversations, messages and
+citations follow §7.1–§7.8. Messages are immutable after creation (§28). Additional durable tables
+required because Redis is not authoritative (§47):
 
-- `REFRESH_TOKEN` — refresh tokens must be revocable and rotated (§8), which requires a durable
-  record of issued tokens (stored hashed, never in clear). Its exact shape is fixed in ADR-007.
-- `USAGE_RECORD` — per-user daily quotas and cost limits are enforced server-side (§38–§39), which
-  requires a durable ledger of AI usage. Its exact shape is fixed with the quota design.
+- `refresh_tokens` — revocable, rotated refresh families ([ADR-007](decisions/ADR-007-authentication-strategy.md)).
+- `usage_events` — daily question / AI-cost ledger for server-side quotas (§38–§39).
 
 | Store      | Role                                                                                                                                                                                |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -516,10 +507,10 @@ interrupted step are unreachable through the application because every read goes
 PostgreSQL first. Recovery of interrupted deletions is a re-run of the same saga; whether that is
 triggered by a scheduled sweep or manually is decided with ADR-006.
 
-**Pending:** `OQ-7` (delete semantics), `OQ-8` (conversation scope and nullability of
-`collection_id`), `OQ-18` (message status for partial answers),
-`OQ-28` (connection management between Lambda and PostgreSQL,
-[ADR-012, proposed](decisions/ADR-012-lambda-database-connections.md)).
+**Pending / residual:** `OQ-8` (conversation-persisted multi-doc scope), `OQ-18` (streaming
+partials), `OQ-28` (Lambda↔RDS connection management,
+[ADR-012](decisions/ADR-012-lambda-database-connections.md)). Delete tombstone semantics are
+decided in [ADR-019](decisions/ADR-019-document-lifecycle.md).
 
 ---
 
@@ -595,12 +586,14 @@ sequenceDiagram
 
 ## 12. AWS target architecture
 
-**Implemented:** Terraform roots for `staging` and `production` with pinned Terraform and AWS
+**Implemented (IaC):** Terraform roots for `staging` and `production` with pinned Terraform and AWS
 provider versions, remote state (S3 + DynamoDB lock, optional SSE-KMS via bootstrap stack), and
 modules for networking, compute, data stores, IAM/OIDC, frontend, API Gateway, and observability.
 Production forces stronger networking, WAF, encryption, and alarm defaults than staging.
+**Not demonstrated:** a green live apply/smoke from this repository — operator bootstrap still
+required ([`deployment.md`](deployment.md)).
 
-**Planned** (§5.4, §57–§58, §87):
+**Target topology** (§5.4, §57–§58, §87):
 
 ```mermaid
 flowchart TB
@@ -646,16 +639,16 @@ flowchart TB
 
 Serverless constraints that shape the pending decisions:
 
-| Constraint                                              | Affects                       | Decision         |
-| ------------------------------------------------------- | ----------------------------- | ---------------- |
-| API Gateway and synchronous Lambda payload limits       | upload and download of PDFs   | `OQ-3`           |
-| API Gateway response streaming support                  | SSE for answers (§44)         | `OQ-3b`          |
-| Lambda execution time and storage limits                | worker for 500-page documents | `OQ-2`           |
-| No managed ChromaDB service                             | vector store hosting          | `OQ-1`           |
-| Each Lambda instance opens its own database connections | RDS connection exhaustion     | `OQ-28`, ADR-012 |
-| Cold starts inside a VPC versus API p95 < 500 ms (§65)  | API latency budget            | ADR-008          |
-| Private database reachable only from the VPC            | running Alembic in deployment | `OQ-23`          |
-| Frontend hosting is unspecified                         | CloudFront, cookies, CORS     | `OQ-19`          |
+| Constraint                                              | Affects                                        | Decision         |
+| ------------------------------------------------------- | ---------------------------------------------- | ---------------- |
+| API Gateway and synchronous Lambda payload limits       | upload and download of PDFs                    | `OQ-3`           |
+| API Gateway response streaming support                  | SSE for answers (§44)                          | `OQ-3b`          |
+| Lambda execution time and storage limits                | worker for 500-page documents                  | `OQ-2`           |
+| No managed ChromaDB service                             | vector store hosting                           | `OQ-1`           |
+| Each Lambda instance opens its own database connections | RDS connection exhaustion                      | `OQ-28`, ADR-012 |
+| Cold starts inside a VPC versus API p95 < 500 ms (§65)  | API latency budget                             | ADR-008          |
+| Private database reachable only from the VPC            | Alembic via migrate Lambda (provisional OQ-23) | —                |
+| Frontend hosting / cookie refresh                       | CloudFront static + OQ-19 cookies              | `OQ-19`          |
 
 ---
 
@@ -715,13 +708,12 @@ for local and production setup. Console rendering of logs exists for local devel
 is rejected in deployed environments. Standard-library and uvicorn records flow through the same
 logging pipeline.
 
-**Planned** (§50–§52):
+**Implemented (Terraform alarms):** Lambda errors/throttles and SQS DLQ / oldest-message alarms
+(§51, §66); production SNS topic when `create_alarm_topic=true`. Usage events and configurable
+AI pricing feed daily cost quotas; a rich cost UI is not built.
 
-- Estimated AI cost and a dedicated usage ledger (OQ-8 / OQ-11).
-- Dead-letter depth and failed-job counts feed alarms (§51, §66).
-
-**Pending:** `OQ-21` — ADOT Lambda layer wiring in Terraform (application OTLP export is ready;
-metrics already use EMF via structured logs).
+**Pending:** `OQ-21` — ADOT Lambda layer / OTLP endpoint wiring in Terraform (application OTEL
+export is ready; metrics already use EMF via structured logs; X-Ray `Active` is set on Lambdas).
 
 ---
 
@@ -769,36 +761,39 @@ Trust boundaries fixed by the specification (§22, §53, §68):
    public access; secrets only via environment and Secrets Manager; `.env` files are git-ignored
    and secret scanning runs in CI.
 
-| Control                                             | Status                                                |
-| --------------------------------------------------- | ----------------------------------------------------- |
-| Secret scanning, dependency audits, image scanning  | Implemented                                           |
-| Non-root, minimal, pinned container images          | Implemented                                           |
-| Local services bound to loopback only               | Implemented                                           |
-| Generated object keys, hashed and encrypted objects | Implemented                                           |
-| Input validation, upload validation                 | Planned                                               |
-| Authentication, authorization, ownership checks     | Implemented                                           |
-| Prompt-injection separation and adversarial tests   | Planned                                               |
-| Rate limiting of authentication endpoints           | Implemented                                           |
-| Rate limiting elsewhere, quotas, AI cost controls   | Planned                                               |
-| Bounded PDF parsing in an isolated worker           | Planned                                               |
-| Text-only rendering of AI and document content      | Implemented (chat answers and citation quotes)        |
-| Least-privilege IAM, Secrets Manager                | Planned                                               |
-| CSRF strategy, token storage                        | Provisional ADR-021; production cookies still `OQ-19` |
+| Control                                             | Status                                                 |
+| --------------------------------------------------- | ------------------------------------------------------ |
+| Secret scanning, dependency audits, image scanning  | Implemented                                            |
+| Non-root, minimal, pinned container images          | Implemented                                            |
+| Local services bound to loopback only               | Implemented                                            |
+| Generated object keys, hashed and encrypted objects | Implemented                                            |
+| Input validation, upload validation                 | Implemented                                            |
+| Authentication, authorization, ownership checks     | Implemented                                            |
+| Prompt-injection separation and adversarial tests   | Implemented (unit + eval categories)                   |
+| Rate limiting of authentication endpoints           | Implemented                                            |
+| Rate limiting elsewhere, quotas, AI cost controls   | Implemented (upload/ask/ai-ops + `usage_events`)       |
+| Bounded PDF parsing in an isolated worker           | Implemented                                            |
+| Text-only rendering of AI and document content      | Implemented (chat answers and citation quotes)         |
+| Least-privilege IAM, Secrets Manager                | Implemented in Terraform (live apply not demonstrated) |
+| CSRF strategy, token storage                        | Provisional ADR-021; production cookies still `OQ-19`  |
 
 ---
 
 ## 16. Status summary
 
-| Area                      | Implemented                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Planned                                                                    | Pending decisions                                 |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------- |
-| Layering and packages     | structure, enforcement test, images, error hierarchy, readiness port, settings, logging, composition roots                                                                                                                                                                                                                                                                                                                                                                                                   | ports, adapters                                                            | —                                                 |
-| Frontend/backend boundary | `/api/v1` convention, request IDs, error envelope, health probes, OpenAPI, auth + documents + chat UI (text-only answers/citations)                                                                                                                                                                                                                                                                                                                                                                          | PDF download/view for cited pages                                          | OQ-3 (download), OQ-3b, OQ-10, OQ-19              |
-| Ingestion                 | intake validation, isolated PyMuPDF extraction, page persistence, semantic chunking, embedding and ChromaDB indexing to READY (ADR-002/003/004/015), CAS state transitions, multipart upload (ADR-020), filename search, delete saga, reprocess and re-index (ADR-019), job enqueue (ADR-011)                                                                                                                                                                                                                | presigned upload, download/view, staleness checks                          | OQ-3 (download / Lambda 50 MB)                    |
-| RAG                       | embedding provider port and adapters (ADR-004), LLM provider port and adapters (ADR-005), vector store port and ChromaDB adapter with tenant isolation (ADR-002), retrieval service with semantic, keyword and hybrid strategies and optional reranking (ADR-016), grounded prompt builder (ADR-017), answering use case with citations and persistence (ADR-018), conversation HTTP + web chat UI, SSE answer streaming (§44; persist only on success), deterministic RAG eval harness under `evals/` (§62) | hosted reranker adapter, quotas, usage ledger, real-provider eval schedule | OQ-4 (language), OQ-8, OQ-17, OQ-18, OQ-22, OQ-3b |
-| Async processing          | worker deployable                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | queue, guarded transitions, retries, DLQ                                   | OQ-2, OQ-27 (ADR-011)                             |
-| Persistence               | §7 schema, Alembic migration, repositories, unit of work, DB probe, object storage port with S3 and filesystem adapters (ADR-014), document tombstones (ADR-019)                                                                                                                                                                                                                                                                                                                                             | usage ledger, tombstone purge                                              | OQ-8, OQ-18, OQ-28 (ADR-012)                      |
-| Authentication            | §8 registration, login, atomic refresh rotation, logout, Argon2id, JWT claims, auth + upload/ask/processing rate limiting (Redis or in-process; user+IP short windows), audit events                                                                                                                                                                                                                                                                                                                         | —                                                                          | OQ-12, OQ-19, OQ-24                               |
-| Authorization             | §9 ownership on collections, documents, conversations, messages, citations                                                                                                                                                                                                                                                                                                                                                                                                                                   | vector and object-store scoping                                            | —                                                 |
-| AWS                       | Terraform roots                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | §57 modules, VPC egress, OIDC                                              | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-23, OQ-28      |
-| CI/CD                     | CI pipeline                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | integration job, CD pipeline                                               | —                                                 |
-| Observability             | structured JSON logs, request/user/doc/conversation correlation, access log, privacy redaction, EMF metrics (HTTP, documents, RAG, AI) + latency, OpenTelemetry traces (HTTP→DB→retrieval→rerank→LLM→persist; job `traceparent`)                                                                                                                                                                                                                                                                             | cost ledger, DLQ alarms, ADOT Terraform wiring                             | OQ-21 (ADOT deploy)                               |
+| Area                      | Implemented                                                                                   | Not done / residual                                           | Pending decisions                      |
+| ------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------- |
+| Layering and packages     | Structure, enforcement test, ports, adapters, composition roots                               | —                                                             | —                                      |
+| Frontend/backend boundary | `/api/v1`, request IDs, error envelope, OpenAPI local, auth + documents + chat UI             | PDF download/view for cited pages                             | OQ-3, OQ-3b, OQ-10, OQ-19              |
+| Ingestion                 | Full pipeline to READY, multipart upload, delete/reprocess/reindex, queue + ADR-011 reconcile | Presigned upload; download/view                               | OQ-3                                   |
+| RAG                       | Hybrid retrieve, grounded answer, citations, SSE, quotas/`usage_events`, offline eval         | Hosted reranker; real-provider eval schedule                  | OQ-4, OQ-8, OQ-17, OQ-18, OQ-22, OQ-3b |
+| Async processing          | memory/Redis/SQS queue, CAS, retries, DLQ abandon, Lambda ACK/reconcile                       | Transactional outbox upgrade                                  | OQ-2, OQ-27                            |
+| Persistence               | §7 schema + refresh_tokens + usage_events, Alembic 0001–0005, object storage                  | Tombstone purge job                                           | OQ-8, OQ-18, OQ-28                     |
+| Authentication            | Register/login/refresh/logout, Argon2id, JWT families, auth+upload+ask+ai-ops rate limits     | Cookie transport; account lifecycle                           | OQ-19, OQ-24                           |
+| Authorization             | Owner scope + 404; vector/object-store scoping                                                | —                                                             | —                                      |
+| AWS                       | Terraform modules, OIDC deploy roles, CD workflows                                            | Live green staging/production; Chroma hosting                 | OQ-1, OQ-2, OQ-3, OQ-3b, OQ-19, OQ-28  |
+| CI/CD                     | Full CI matrix + staging/production CD workflows                                              | Operator Environment/bootstrap before first successful deploy | —                                      |
+| Observability             | Structured logs, EMF metrics, OTEL hooks, Terraform alarms                                    | ADOT layer / OTLP endpoint in Terraform                       | OQ-21                                  |
+
+Cross-reference docs: [`api.md`](api.md) · [`database.md`](database.md) · [`rag.md`](rag.md) ·
+[`security.md`](security.md) · [`deployment.md`](deployment.md) · [`operations.md`](operations.md).

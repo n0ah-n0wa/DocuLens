@@ -46,6 +46,8 @@ blob-report/
 playwright/.cache/
 
 # Terraform: see infrastructure/terraform/.gitignore
+.terraform.d/
+.cache/
 
 # Editors and operating systems (shared extension recommendations are versioned)
 .idea/

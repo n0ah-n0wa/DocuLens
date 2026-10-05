@@ -87,11 +87,12 @@ module "storage" {
 module "queue" {
   source = "../../modules/queue"
 
-  name_prefix     = local.name_prefix
-  kms_key_arn     = module.kms.key_arn
-  api_role_arn    = module.iam.api_role_arn
-  worker_role_arn = module.iam.worker_role_arn
-  tags            = local.common_tags
+  name_prefix                = local.name_prefix
+  kms_key_arn                = module.kms.key_arn
+  api_role_arn               = module.iam.api_role_arn
+  worker_role_arn            = module.iam.worker_role_arn
+  visibility_timeout_seconds = 1080
+  tags                       = local.common_tags
 }
 
 module "database" {
@@ -219,22 +220,32 @@ module "compute" {
 
   environment_variables = merge(
     {
-      STORAGE_BACKEND               = "s3"
-      STORAGE_BUCKET                = module.storage.bucket_id
-      STORAGE_REGION                = var.aws_region
-      STORAGE_ENCRYPTION            = "aws:kms"
-      STORAGE_KMS_KEY_ID            = module.kms.key_arn
-      STORAGE_EXPECTED_BUCKET_OWNER = data.aws_caller_identity.current.account_id
-      QUEUE_BACKEND                 = "sqs"
-      QUEUE_SQS_URL                 = module.queue.queue_url
-      QUEUE_SQS_DLQ_URL             = module.queue.dlq_url
-      QUEUE_SQS_REGION              = var.aws_region
-      RATE_LIMIT_BACKEND            = "redis"
-      VECTOR_STORE                  = "chroma"
-      CHROMA_URL                    = var.chroma_url
-      LLM_PROVIDER                  = var.llm_provider
-      EMBEDDING_PROVIDER            = var.embedding_provider
-      RERANKER_PROVIDER             = "none"
+      STORAGE_BACKEND                  = "s3"
+      STORAGE_BUCKET                   = module.storage.bucket_id
+      STORAGE_REGION                   = var.aws_region
+      STORAGE_ENCRYPTION               = "aws:kms"
+      STORAGE_KMS_KEY_ID               = module.kms.key_arn
+      STORAGE_EXPECTED_BUCKET_OWNER    = data.aws_caller_identity.current.account_id
+      QUEUE_BACKEND                    = "sqs"
+      QUEUE_SQS_URL                    = module.queue.queue_url
+      QUEUE_SQS_DLQ_URL                = module.queue.dlq_url
+      QUEUE_SQS_REGION                 = var.aws_region
+      QUEUE_VISIBILITY_TIMEOUT_SECONDS = "1080"
+      QUEUE_PROCESSING_TIMEOUT_SECONDS = "840"
+      QUEUE_MAX_ATTEMPTS               = "5"
+      MAX_FILE_SIZE_MB                 = "10"
+      LLM_TIMEOUT_SECONDS              = "20"
+      RATE_LIMIT_BACKEND               = "redis"
+      VECTOR_STORE                     = "chroma"
+      CHROMA_URL                       = var.chroma_url
+      LLM_PROVIDER                     = var.llm_provider
+      EMBEDDING_PROVIDER               = var.embedding_provider
+      RERANKER_PROVIDER                = "none"
+    },
+    length(var.cors_allow_origins) > 0 ? {
+      CORS_ORIGINS = join(",", var.cors_allow_origins)
+      } : {
+      CORS_ORIGINS = module.frontend.frontend_url
     },
     var.chroma_api_token_secret_arn != "" ? {
       CHROMA_API_TOKEN_SECRET_ARN = var.chroma_api_token_secret_arn

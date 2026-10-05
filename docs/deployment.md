@@ -3,6 +3,11 @@
 How DocuLens reaches AWS (SPECIFICATIONS.md §5.5, §56–§60). Local development stays on
 `docker/compose.yaml` and does not use these roles.
 
+**Honest status:** CD workflows, Terraform, smoke scripts, and rollback paths are implemented in
+this repository. A green live staging/production deploy still requires operator bootstrap (state,
+OIDC, GitHub Environments, real `CHROMA_URL`, LLM keys). Troubleshooting:
+[`operations.md`](operations.md).
+
 ## Staging pipeline
 
 ```text
@@ -148,14 +153,15 @@ Recommended production Environment settings:
 
 ### 2. Staging Environment variables
 
-| Name                  | Value                                                           |
-| --------------------- | --------------------------------------------------------------- |
-| `AWS_DEPLOY_ROLE_ARN` | `terraform output -raw deploy_role_arn` (staging root)          |
-| `AWS_REGION`          | e.g. `eu-central-1`                                             |
-| `TF_STATE_BUCKET`     | Terraform state bucket name                                     |
-| `TF_LOCK_TABLE`       | DynamoDB lock table name                                        |
-| `TF_STATE_KMS_KEY_ID` | Optional state CMK ARN (`bootstrap/state` output `kms_key_arn`) |
-| `CHROMA_URL`          | Reachable Chroma endpoint (OQ-1; readiness may fail until set)  |
+| Name                  | Value                                                                           |
+| --------------------- | ------------------------------------------------------------------------------- |
+| `AWS_DEPLOY_ROLE_ARN` | `terraform output -raw deploy_role_arn` (staging root)                          |
+| `AWS_REGION`          | e.g. `eu-central-1`                                                             |
+| `TF_STATE_BUCKET`     | Terraform state bucket name                                                     |
+| `TF_LOCK_TABLE`       | DynamoDB lock table name                                                        |
+| `TF_STATE_KMS_KEY_ID` | Optional state CMK ARN (`bootstrap/state` output `kms_key_arn`)                 |
+| `CHROMA_URL`          | Required `https://` Chroma endpoint (OQ-1; placeholder values fail CD)          |
+| `CORS_ALLOW_ORIGINS`  | Comma-separated browser origins (CloudFront URL); wires API GW + `CORS_ORIGINS` |
 
 ### 3. Production Environment variables
 
@@ -243,12 +249,14 @@ export ECR_REGISTRY=123456789012.dkr.ecr.$AWS_REGION.amazonaws.com
 
 cat > infrastructure/terraform/envs/staging/terraform.tfvars <<EOF
 aws_region                  = "${AWS_REGION}"
-chroma_url                  = "${CHROMA_URL:-https://chroma.example.internal:8000}"
+chroma_url                  = "${CHROMA_URL:?set a real https:// Chroma URL}"
 create_github_oidc_provider = false
 create_github_deploy_role   = true
 github_repository           = "ORG/DocuLens"
 enable_interface_endpoints  = false
 enable_vpc_flow_logs        = true
+# Optional after first CloudFront URL is known:
+# cors_allow_origins        = ["https://d111111abcdef8.cloudfront.net"]
 EOF
 
 ./scripts/cd/plan_staging.sh
@@ -263,7 +271,7 @@ Same pattern against the production root and role (prefer CD for real releases):
 ```bash
 cat > infrastructure/terraform/envs/production/terraform.tfvars <<EOF
 aws_region                  = "${AWS_REGION}"
-chroma_url                  = "${CHROMA_URL:-https://chroma.example.internal:8000}"
+chroma_url                  = "${CHROMA_URL:?set a real https:// Chroma URL}"
 create_github_oidc_provider = true
 create_github_deploy_role   = true
 github_repository           = "ORG/DocuLens"

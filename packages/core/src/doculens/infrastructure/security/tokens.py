@@ -48,7 +48,9 @@ class JwtTokenCodec:
             payload["fam"] = str(claims.family_id)
         return jwt.encode(payload, self._secret, algorithm=ALGORITHM)
 
-    def decode(self, token: str, *, expected_type: TokenType) -> TokenClaims:
+    def decode(
+        self, token: str, *, expected_type: TokenType, verify_expiry: bool = True
+    ) -> TokenClaims:
         try:
             payload = jwt.decode(
                 token,
@@ -75,6 +77,6 @@ class JwtTokenCodec:
             )
         except (ValueError, TypeError, KeyError) as exc:
             raise InvalidTokenError from exc
-        if self._clock() >= claims.expires_at + self._leeway:
+        if verify_expiry and self._clock() >= claims.expires_at + self._leeway:
             raise TokenExpiredError
         return claims

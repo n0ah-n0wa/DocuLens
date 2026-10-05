@@ -10,7 +10,7 @@ import type {
 import { apiRequest, tryRefreshSession } from "@/lib/api/client";
 import { ApiError, isApiErrorResponse } from "@/lib/api/errors";
 import { appConfig } from "@/lib/config";
-import { getAccessToken, getRefreshToken } from "@/lib/auth/session";
+import { clearSessionTokens, getAccessToken, getRefreshToken } from "@/lib/auth/session";
 import { consumeSseBuffer, parseAnswerStreamData } from "@/lib/chat/sse";
 
 export async function listConversations(signal?: AbortSignal): Promise<Conversation[]> {
@@ -130,6 +130,9 @@ export async function askQuestionStream(
       if (refreshed) {
         return once(true);
       }
+      clearSessionTokens();
+    } else if (response.status === 401) {
+      clearSessionTokens();
     }
 
     if (!response.ok) {
@@ -166,6 +169,7 @@ export async function askQuestionStream(
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
+          buffer += decoder.decode();
           break;
         }
         buffer += decoder.decode(value, { stream: true });
@@ -186,18 +190,19 @@ export async function askQuestionStream(
         }
       }
       if (buffer.trim()) {
-        const dataLine = buffer
-          .split("\n")
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).trimStart())
-          .join("\n");
-        const event = parseAnswerStreamData(dataLine || buffer);
-        if (event?.type === "final") {
-          finalAnswer = event.answer;
-        } else if (event?.type === "error") {
-          throw new ApiError(0, event.error);
-        } else if (event?.type === "delta") {
-          handlers.onDelta?.(event.text);
+        const flushed = consumeSseBuffer(`${buffer}\n\n`);
+        for (const raw of flushed.events) {
+          const event = parseAnswerStreamData(raw);
+          if (event === null) {
+            continue;
+          }
+          if (event.type === "delta") {
+            handlers.onDelta?.(event.text);
+          } else if (event.type === "final") {
+            finalAnswer = event.answer;
+          } else if (event.type === "error") {
+            throw new ApiError(0, event.error);
+          }
         }
       }
     } finally {

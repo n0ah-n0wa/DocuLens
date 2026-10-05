@@ -88,8 +88,9 @@ variable "api_timeout_seconds" {
 }
 
 variable "worker_timeout_seconds" {
-  type    = number
-  default = 900
+  description = "Worker Lambda timeout; must stay strictly below the SQS visibility timeout."
+  type        = number
+  default     = 900
 }
 
 variable "worker_maximum_concurrency" {

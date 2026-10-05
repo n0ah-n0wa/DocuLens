@@ -92,10 +92,11 @@ terraform-validate: ## Init without backend and validate staging + production
 	cd infrastructure/terraform/envs/staging && terraform init -backend=false -input=false && terraform validate
 	cd infrastructure/terraform/envs/production && terraform init -backend=false -input=false && terraform validate
 
+# Absolute --config: with --chdir, relative paths resolve against the chdir root (breaks on Windows).
 terraform-lint: ## Run tflint against staging and production roots
 	cd infrastructure/terraform && tflint --init --config .tflint.hcl
-	cd infrastructure/terraform && tflint --config .tflint.hcl --chdir envs/staging --call-module-type=local
-	cd infrastructure/terraform && tflint --config .tflint.hcl --chdir envs/production --call-module-type=local
+	cd infrastructure/terraform && tflint --config "$(CURDIR)/infrastructure/terraform/.tflint.hcl" --chdir envs/staging --call-module-type=local
+	cd infrastructure/terraform && tflint --config "$(CURDIR)/infrastructure/terraform/.tflint.hcl" --chdir envs/production --call-module-type=local
 
 terraform-check: terraform-fmt terraform-validate terraform-lint ## Terraform format, validate, and lint
 

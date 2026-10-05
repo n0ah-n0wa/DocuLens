@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -26,8 +27,8 @@ AUTH_RATE_LIMIT_WINDOW_SECONDS=60
 POSTGRES_USER=doculens
 POSTGRES_PASSWORD=doculens-local-only
 POSTGRES_DB=doculens
-POSTGRES_PORT=5432
-DATABASE_URL=postgresql+asyncpg://doculens:doculens-local-only@127.0.0.1:5432/doculens
+POSTGRES_PORT={postgres_port}
+DATABASE_URL=postgresql+asyncpg://doculens:doculens-local-only@127.0.0.1:{postgres_port}/doculens
 DATABASE_POOL_SIZE=5
 DATABASE_MAX_OVERFLOW=5
 DATABASE_POOL_TIMEOUT_SECONDS=10
@@ -108,7 +109,9 @@ CITATION_MAX_QUOTE_CHARACTERS=500
 
 
 def env_body() -> str:
-    return _ENV_TEMPLATE.format(jwt_secret=_JWT_SECRET)
+    # Honour compose ``POSTGRES_PORT`` when the host maps away from 5432.
+    postgres_port = os.environ.get("POSTGRES_PORT", "5432").strip() or "5432"
+    return _ENV_TEMPLATE.format(jwt_secret=_JWT_SECRET, postgres_port=postgres_port)
 
 
 def main(argv: list[str]) -> int:

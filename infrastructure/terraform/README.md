@@ -4,10 +4,15 @@ Infrastructure as Code for the `staging` and `production` environments (SPECIFIC
 `local` is not a Terraform environment: it is the docker compose stack in `docker/compose.yaml`
 (OQ-26).
 
+**Honest status:** modules and CD scripts are complete in this repository. A successful live apply
+still depends on operator bootstrap (state bucket, OIDC, GitHub Environments, real `chroma_url`).
+See [`docs/deployment.md`](../../docs/deployment.md) and [`docs/operations.md`](../../docs/operations.md).
+
 ## Layout
 
 ```text
 infrastructure/terraform/
+├── bootstrap/state/   # one-time S3 + DynamoDB lock (+ optional KMS); apply manually, not via CD
 ├── envs/
 │   ├── staging/       # root module for staging
 │   └── production/    # root module for production
@@ -47,9 +52,9 @@ State keys:
 | staging     | `doculens/staging/terraform.tfstate`    |
 | production  | `doculens/production/terraform.tfstate` |
 
-Bootstrap the state bucket and DynamoDB lock table manually before the first apply. The GitHub
-Actions OIDC provider is created by Terraform when `create_github_oidc_provider = true` (see
-[`docs/deployment.md`](../../docs/deployment.md)). See `backend.hcl.example`.
+Bootstrap the state bucket and DynamoDB lock table once via `bootstrap/state/` before the first
+environment apply. The GitHub Actions OIDC provider is created by Terraform when
+`create_github_oidc_provider = true` (see [`docs/deployment.md`](../../docs/deployment.md)).
 
 ## Working with an environment
 
@@ -60,29 +65,27 @@ terraform init -backend-config=backend.hcl
 terraform fmt -recursive ../..
 terraform validate
 terraform plan -var-file=terraform.tfvars
-# terraform apply is intentional and out of scope until CD is ready
+# Prefer CD for apply (OIDC deploy role). Local apply only with equivalent credentials.
 ```
 
 CI runs `terraform fmt -check -recursive` and, per environment,
 `terraform init -backend=false && terraform validate`, plus `tflint` and a Trivy configuration
-scan of `infrastructure/terraform` (misconfigurations fail the job).
+scan of `infrastructure/terraform` (misconfigurations fail the job). CD workflows apply after
+plan via [`.github/workflows/cd-staging.yml`](../../.github/workflows/cd-staging.yml) /
+[`cd-production.yml`](../../.github/workflows/cd-production.yml).
 
 ## Notes
 
-- **No deploy from this change set.** Plan/validate only until CD and image pipelines land.
-- **Lambda images:** push digest-tagged images to the environment ECR repos, then set
-  `api_image_uri` / `worker_image_uri` before the first successful Lambda create/update.
+- **Lambda images:** CD pushes digest-tagged images to ECR, then sets `api_image_uri` /
+  `worker_image_uri` on apply.
 - **Secrets:** JWT, DB URL, and Redis URL live only in Secrets Manager. Lambdas receive
-  `APP_SECRETS_ARN` (not plaintext secrets in the function environment). Runtime must
-  hydrate `JWT_SECRET` / `DATABASE_URL` / `REDIS_URL` from that secret at cold start.
-- **ChromaDB (OQ-1):** `vector-store` does not provision a server; set `chroma_url` to an
-  external endpoint (or leave readiness failing until hosting is decided).
-- **GitHub OIDC (§5.5):** one account-level IdP (`create_github_oidc_provider`, usually production)
-  plus a **dedicated deploy role per environment**. Trust is
-  `repo:<org>/<repo>:environment:<staging|production>` only — no branch wildcards and no
-  `environment:*`. Staging looks up the existing IdP (`create_github_oidc_provider = false`).
-  Configure GitHub Environments and `AWS_DEPLOY_ROLE_ARN` as described in
-  [`docs/deployment.md`](../../docs/deployment.md). Validate with
+  `APP_SECRETS_ARN` and hydrate at cold start. LLM/embedding keys via
+  `TF_VAR_EXTRA_SECRET_VALUES` (GitHub Environment secret) or the AWS Console.
+- **ChromaDB (OQ-1):** `vector-store` does not provision a server; set `chroma_url` to a real
+  `https://` endpoint (placeholders fail CD).
+- **GitHub OIDC (§5.5):** one account-level IdP plus a dedicated deploy role per environment.
+  Trust is `repo:<org>/<repo>:environment:<staging|production>` only. Validate with
   `uv run python scripts/validate_github_oidc.py`.
-- **Cost knobs:** staging disables interface VPC endpoints by default; production uses
-  2 NAT gateways (not 3) and caps worker SQS concurrency.
+- **Cost knobs:** staging disables interface VPC endpoints by default; production defaults to
+  `az_count = 3` and `nat_gateway_count = 3` (raised to `max(nat, az)`), and caps worker SQS
+  concurrency.

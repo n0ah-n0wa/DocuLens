@@ -84,6 +84,20 @@ class DocumentRepository(Protocol):
     async def list_for_owner(self, owner_id: UUID) -> list[Document]: ...
     async def list_in_collection(self, owner_id: UUID, collection_id: UUID) -> list[Document]: ...
 
+    async def list_processing_stragglers(
+        self,
+        *,
+        status: ProcessingStatus,
+        older_than: datetime,
+        limit: int = 50,
+    ) -> list[Document]:
+        """Unscoped worker read of documents stuck in ``status`` before ``older_than``.
+
+        Used by ADR-011 reconciliation to re-enqueue orphaned ``UPLOADED`` rows after a quiet
+        enqueue failure. Ordered oldest-first; ``limit`` bounds one sweep.
+        """
+        ...
+
     async def search_for_owner(
         self, owner_id: UUID, *, query: str, collection_id: UUID | None = None
     ) -> list[Document]:

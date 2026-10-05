@@ -23,6 +23,9 @@ DATABASE_URL_SCHEME = "postgresql+asyncpg"
 BUCKET_NAME_PATTERN = r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
 AWS_ACCOUNT_ID_PATTERN = r"^[0-9]{12}$"
 DEFAULT_MAX_OBJECT_BYTES = 100 * 1024 * 1024
+# API Gateway HTTP API hard limits until OQ-3 / OQ-3b land differently.
+DEPLOYED_MAX_FILE_SIZE_MB = 10
+DEPLOYED_MAX_LLM_TIMEOUT_SECONDS = 20.0
 ENDPOINT_SCHEMES = ("http://", "https://")
 
 
@@ -665,13 +668,32 @@ class CoreSettings(BaseSettings):
             problems.append("EMBEDDING_PROVIDER must not be fake (no real vectors, §15)")
         if not self.embedding_api_base_url.startswith("https://"):
             problems.append("EMBEDDING_API_BASE_URL must use https (encryption in transit, §53)")
+        if (
+            self.embedding_provider is EmbeddingProviderKind.OPENAI
+            and self.embedding_api_key is None
+        ):
+            problems.append("EMBEDDING_API_KEY is required when EMBEDDING_PROVIDER=openai")
         if self.llm_provider is LLMProviderKind.FAKE:
             problems.append("LLM_PROVIDER must not be fake (no real answers, §21)")
         if not self.llm_api_base_url.startswith("https://"):
             problems.append("LLM_API_BASE_URL must use https (encryption in transit, §53)")
+        if self.llm_provider is LLMProviderKind.OPENAI and self.llm_api_key is None:
+            problems.append("LLM_API_KEY is required when LLM_PROVIDER=openai")
+        # API Gateway HTTP API integration timeout is 30s (OQ-3b); leave headroom for retrieval.
+        if self.llm_timeout_seconds > DEPLOYED_MAX_LLM_TIMEOUT_SECONDS:
+            problems.append(
+                "LLM_TIMEOUT_SECONDS must be <= 20 when deployed "
+                "(API Gateway 30s limit until response streaming closes OQ-3b)"
+            )
         if self.reranker_provider is RerankerKind.FAKE:
             problems.append(
                 "RERANKER_PROVIDER must not be fake (use none until a vendor exists, §19)"
+            )
+        # API Gateway HTTP API payload limit is 10 MiB (OQ-3 provisional multipart).
+        if self.max_file_size_mb > DEPLOYED_MAX_FILE_SIZE_MB:
+            problems.append(
+                "MAX_FILE_SIZE_MB must be <= 10 when deployed "
+                "(API Gateway HTTP API payload limit, OQ-3)"
             )
         return problems
 

@@ -37,10 +37,13 @@ def chroma_url() -> Iterator[str]:
 @pytest.fixture
 async def store(chroma_url: str) -> AsyncIterator[ChromaVectorStore]:
     """A fresh, uniquely named collection per test; dropped afterwards."""
+    # Integration suites share one Chroma under heavy parallel load; keep the
+    # client timeout above the default 10s so setup is not flaky.
     subject = ChromaVectorStore.from_url(
         chroma_url,
         collection=f"doculens-test-{uuid4().hex[:12]}",
         collection_metadata={"embedding_model": "fake-embedding-v1"},
+        timeout_seconds=30.0,
     )
     await subject.ensure_collection()
     try:

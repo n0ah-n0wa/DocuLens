@@ -13,12 +13,13 @@ import logging
 import random
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol, cast
 
 from doculens.application.metrics import NAMESPACE_DOCUMENTS, emit_count, emit_latency_ms
 from doculens.application.observability import correlation_context
 from doculens.application.tracing import attach_traceparent, inject_traceparent, start_span
+from doculens.domain.documents import ProcessingStatus
 from doculens.domain.errors import DependencyUnavailableError
 from doculens.domain.jobs import (
     ClaimedJob,
@@ -31,6 +32,8 @@ from doculens.domain.time import utc_now
 
 if TYPE_CHECKING:
     from uuid import UUID
+
+    from doculens.application.unit_of_work import UnitOfWorkFactory
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +151,48 @@ class DocumentJobDispatcher:
                 },
             )
             return None
+
+    async def reconcile_stragglers(
+        self,
+        unit_of_work: UnitOfWorkFactory,
+        *,
+        min_age_seconds: float = 120.0,
+        limit: int = 25,
+        request_id: str | None = None,
+    ) -> int:
+        """Re-enqueue documents stuck in ``UPLOADED`` after a quiet enqueue failure (ADR-011).
+
+        Returns how many enqueue attempts succeeded. Duplicate jobs are harmless: the processor
+        is idempotent under at-least-once delivery (§49).
+        """
+        cutoff = self._clock() - timedelta(seconds=max(0.0, min_age_seconds))
+        async with unit_of_work() as uow:
+            stragglers = await uow.documents.list_processing_stragglers(
+                status=ProcessingStatus.UPLOADED,
+                older_than=cutoff,
+                limit=limit,
+            )
+        enqueued = 0
+        for document in stragglers:
+            job = await self.enqueue_quietly(document.id, request_id=request_id)
+            if job is not None:
+                enqueued += 1
+        if stragglers:
+            logger.info(
+                "document processing stragglers reconciled",
+                extra={
+                    "operation": "jobs.reconcile",
+                    "candidates": len(stragglers),
+                    "enqueued": enqueued,
+                    "request_id": request_id,
+                },
+            )
+            emit_count(
+                "jobs.reconcile_candidates",
+                value=float(len(stragglers)),
+                namespace=NAMESPACE_DOCUMENTS,
+            )
+        return enqueued
 
 
 class DocumentJobWorker:

@@ -17,11 +17,13 @@ Reusable modules for staging and production (SPECIFICATIONS.md §57–§58).
 | `compute`       | Container-image Lambdas (API, SQS worker, migrations) in the VPC               |
 | `api-gateway`   | HTTP API (`$default` → Lambda proxy) with access logs and throttling           |
 | `observability` | Encrypted CloudWatch log groups and error/DLQ alarms                           |
-| `vector-store`  | Placeholder for ChromaDB hosting (**OQ-1** still open)                         |
+| `vector-store`  | **Wiring only** — no Chroma compute; passes operator `chroma_url` (**OQ-1**)   |
 
 Open questions that intentionally leave gaps:
 
 - **OQ-1** — Chroma hosting (ECS/EC2/Cloud); SG reserved, no compute yet.
-- **OQ-2** — Worker packaging / Lambda RIC vs ECS; functions accept container images.
+- **OQ-2** — Worker packaging / Lambda RIC vs ECS; functions accept container images
+  (provisional: Lambda RIC + Mangum/SQS handlers).
 - **OQ-3b** — SSE through API Gateway; HTTP API is provisional.
-- **OQ-23** — Migrations Lambda exists for CD to invoke; runner entrypoint TBD.
+- **OQ-23** — Provisional: migrate Lambda uses the API image with
+  `doculens_api.migrate_handler` (`alembic upgrade head`), invoked synchronously by CD.

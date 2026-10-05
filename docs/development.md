@@ -44,14 +44,27 @@ Line endings are forced to LF on every platform by `.gitattributes`; editors pic
 
 ## 2. Running the services
 
+**Compose starts data dependencies only** (PostgreSQL, Redis, ChromaDB, MinIO). The API, worker,
+and Next.js app run on the host via the commands below (production images are separate — see
+`make docker-build`).
+
 ```bash
+make infra-up                                                 # postgres, redis, chroma, minio (+ bucket)
 uv run uvicorn doculens_api.main:create_app --factory --reload --port 8000     # API + OpenAPI at /docs
-uv run python -m doculens_worker                              # worker (no queue consumer yet)
-uv run python -m doculens_worker process <document-id>        # validation + extraction for one document
+uv run python -m doculens_worker                              # queue consumer (QUEUE_BACKEND=memory|redis|sqs)
+uv run python -m doculens_worker process <document-id>        # process one document without the poller
 pnpm --filter @doculens/web dev                               # web app on :3000
-docker compose --project-directory . -f docker/compose.yaml up --detach --wait
-docker compose --project-directory . -f docker/compose.yaml run --rm minio-init  # documents bucket
 make docker-build                                             # production images, built locally
+```
+
+For the usual two-process local setup (API + worker), set `QUEUE_BACKEND=redis` in `.env` after
+`make infra-up`. `QUEUE_BACKEND=memory` is in-process only and suits unit tests, not separate
+API and worker processes.
+
+Vertical-slice demo (API + worker must already be up):
+
+```bash
+uv run python scripts/demo_api_happy_path.py
 ```
 
 Environments (§87): `local` is the docker compose stack; `staging` and `production` are Terraform
@@ -143,15 +156,15 @@ Node is one pnpm workspace (`pnpm-workspace.yaml`): `apps/web` (Next.js) and
 
 Where new code goes:
 
-| You are adding…                                      | Put it in                                                             |
-| ---------------------------------------------------- | --------------------------------------------------------------------- |
-| an entity, value object, state machine, port         | `doculens.domain`                                                     |
-| a use case or orchestration (e.g. `RAGService`)      | `doculens.application`                                                |
-| an adapter (SQLAlchemy, S3, Chroma, Redis, provider) | `doculens.infrastructure`                                             |
-| an HTTP route, request/response schema, middleware   | `doculens_api`                                                        |
-| a queue handler                                      | `doculens_worker`                                                     |
-| a UI screen or component                             | `apps/web/src`                                                        |
-| a type shared with the frontend                      | `packages/shared-types` (generated from OpenAPI once endpoints exist) |
+| You are adding…                                      | Put it in                                                                           |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| an entity, value object, state machine, port         | `doculens.domain`                                                                   |
+| a use case or orchestration (e.g. `RAGService`)      | `doculens.application`                                                              |
+| an adapter (SQLAlchemy, S3, Chroma, Redis, provider) | `doculens.infrastructure`                                                           |
+| an HTTP route, request/response schema, middleware   | `doculens_api`                                                                      |
+| a queue handler                                      | `doculens_worker`                                                                   |
+| a UI screen or component                             | `apps/web/src`                                                                      |
+| a type shared with the frontend                      | `packages/shared-types` (hand-maintained TypeScript contracts; not OpenAPI-codegen) |
 
 ## 4. Quality gates
 
@@ -211,8 +224,8 @@ ago (`minimumReleaseAge`) and blocks dependency build scripts unless allow-liste
 - `.env.example` (backend and compose) and `apps/web/.env.example` document every variable; real
   values go in git-ignored `.env` / `.env.local` files locally and in AWS Secrets Manager when deployed.
 - Never commit secrets; CI runs gitleaks. Never log passwords, tokens, API keys or full document text.
-- Configuration is validated at start-up once the settings module exists; invalid production
-  configuration must fail loudly.
+- Configuration is validated at start-up; deployed environments refuse unsafe values (fake AI
+  providers, console-only logs, non-SQS queues, cleartext Redis, etc.).
 
 ## 8. Commits and pull requests (§85–§86)
 
@@ -222,6 +235,8 @@ deviations. `main` is protected: green CI and review before merge, no force push
 
 ## 9. Troubleshooting
 
+Short local checklist; the fuller operator runbook is [`operations.md`](operations.md).
+
 - `pnpm install` refuses to run: Node 24 and pnpm 11 are required (`engine-strict`); run
   `corepack enable`.
 - `pnpm install` reports a supply-chain policy violation: a pinned version is newer than 24 hours.
@@ -230,3 +245,6 @@ deviations. `main` is protected: green CI and review before merge, no force push
 - `uv run mypy` reports duplicate modules: two test files share a basename; rename one.
 - Coverage below the floor: the new code has no test, or a subprocess-only path is not excluded.
 - `docker info` fails on Windows: start Docker Desktop before `make infra-up` or `make docker-build`.
+- Documents stuck in `UPLOADED`: ensure the worker is running and `QUEUE_BACKEND` matches how API
+  and worker communicate (use Redis for two-process local dev).
+- OpenAPI missing: set `API_DOCS_ENABLED=true` (default on locally). See [`api.md`](api.md).

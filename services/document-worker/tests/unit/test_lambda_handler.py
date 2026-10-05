@@ -26,17 +26,29 @@ def _reset_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOG_FORMAT", "json")
 
 
-def test_handler_reports_batch_item_failures(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = CoreSettings(
+def _settings(**overrides: object) -> CoreSettings:
+    return CoreSettings(
         _env_file=None,
         database_url=DB_URL,
         app_env=Environment.LOCAL,
         log_format=LogFormat.JSON,
         log_level=LogLevel.INFO,
+        **overrides,  # type: ignore[arg-type]
     )
-    monkeypatch.setattr(worker_lambda, "_settings", lambda: settings)
+
+
+@pytest.fixture(autouse=True)
+def _skip_reconcile(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _noop(_settings: CoreSettings) -> None:
+        return None
+
+    monkeypatch.setattr(worker_lambda, "_reconcile_stragglers", _noop)
+
+
+def test_handler_reports_batch_item_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(worker_lambda, "_settings", _settings)
 
     async def boom(_settings: CoreSettings, _document_id: UUID) -> ProcessingReport:
         message = "boom"
@@ -50,6 +62,7 @@ def test_handler_reports_batch_item_failures(
             {
                 "messageId": "m-1",
                 "body": json.dumps({"document_id": str(document_id), "job_id": "j1", "attempt": 1}),
+                "attributes": {"ApproximateReceiveCount": "1"},
             }
         ]
     }
@@ -57,17 +70,71 @@ def test_handler_reports_batch_item_failures(
     assert result == {"batchItemFailures": [{"itemIdentifier": "m-1"}]}
 
 
+def test_handler_acks_failed_outcomes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(worker_lambda, "_settings", _settings)
+
+    async def failed(_settings: CoreSettings, document_id: UUID) -> ProcessingReport:
+        return ProcessingReport(
+            document_id=document_id,
+            outcome=ProcessingOutcome.FAILED,
+            status=ProcessingStatus.FAILED,
+            stages=(),
+        )
+
+    monkeypatch.setattr(worker_lambda, "process_document", failed)
+    document_id = uuid4()
+    event = {
+        "Records": [
+            {
+                "messageId": "m-fail",
+                "body": json.dumps({"document_id": str(document_id)}),
+                "attributes": {"ApproximateReceiveCount": "2"},
+            }
+        ]
+    }
+    result = worker_lambda.handler(event, object())
+    assert result == {"batchItemFailures": []}
+
+
+def test_handler_abandons_after_receive_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(queue_max_attempts=3)
+    monkeypatch.setattr(worker_lambda, "_settings", lambda: settings)
+    abandoned: list[UUID] = []
+
+    async def boom(_settings: CoreSettings, _document_id: UUID) -> ProcessingReport:
+        message = "still broken"
+        raise RuntimeError(message)
+
+    async def abandon(_settings: CoreSettings, document_id: UUID, *, reason: str) -> None:
+        del _settings, reason
+        abandoned.append(document_id)
+
+    monkeypatch.setattr(worker_lambda, "process_document", boom)
+    monkeypatch.setattr(worker_lambda, "_abandon_document", abandon)
+
+    document_id = uuid4()
+    event = {
+        "Records": [
+            {
+                "messageId": "m-exhaust",
+                "body": json.dumps({"document_id": str(document_id)}),
+                "attributes": {"ApproximateReceiveCount": "3"},
+            }
+        ]
+    }
+    result = worker_lambda.handler(event, object())
+    assert result == {"batchItemFailures": []}
+    assert abandoned == [document_id]
+
+
 def test_handler_succeeds_for_processed_document(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = CoreSettings(
-        _env_file=None,
-        database_url=DB_URL,
-        app_env=Environment.LOCAL,
-        log_format=LogFormat.JSON,
-        log_level=LogLevel.INFO,
-    )
-    monkeypatch.setattr(worker_lambda, "_settings", lambda: settings)
+    monkeypatch.setattr(worker_lambda, "_settings", _settings)
 
     async def ok(_settings: CoreSettings, document_id: UUID) -> ProcessingReport:
         return ProcessingReport(

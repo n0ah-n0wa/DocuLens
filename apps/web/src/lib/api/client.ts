@@ -31,6 +31,7 @@ type TokenPairLike = {
   refresh_token: string;
 };
 
+const REFRESH_LOCK_NAME = "doculens-token-refresh";
 let refreshInFlight: Promise<boolean> | null = null;
 
 function newRequestId(): string {
@@ -76,40 +77,53 @@ async function parseBody(response: Response): Promise<unknown> {
   }
 }
 
+async function performRefresh(): Promise<boolean> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) {
+    return false;
+  }
+  const requestId = newRequestId();
+  try {
+    const response = await fetch(`${appConfig.apiBaseUrl}/api/v1/auth/refresh`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        [appConfig.requestIdHeader]: requestId,
+      },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    const payload = await parseBody(response);
+    if (!response.ok || !isTokenPair(payload)) {
+      clearSessionTokens();
+      return false;
+    }
+    setAccessToken(payload.access_token);
+    setRefreshToken(payload.refresh_token);
+    return true;
+  } catch {
+    // Network blips should not wipe the session; the caller can retry later.
+    return false;
+  }
+}
+
 async function refreshAccessToken(): Promise<boolean> {
   if (refreshInFlight) {
     return refreshInFlight;
   }
-  refreshInFlight = (async () => {
-    const refreshToken = getRefreshToken();
-    if (!refreshToken) {
-      return false;
-    }
-    const requestId = newRequestId();
+  const run = async (): Promise<boolean> => {
     try {
-      const response = await fetch(`${appConfig.apiBaseUrl}/api/v1/auth/refresh`, {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-          [appConfig.requestIdHeader]: requestId,
-        },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      });
-      const payload = await parseBody(response);
-      if (!response.ok || !isTokenPair(payload)) {
-        clearSessionTokens();
-        return false;
+      // Cross-tab coordination when Web Locks are available (Chromium / Safari).
+      const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
+      if (locks?.request) {
+        return await locks.request(REFRESH_LOCK_NAME, performRefresh);
       }
-      setAccessToken(payload.access_token);
-      setRefreshToken(payload.refresh_token);
-      return true;
-    } catch {
-      return false;
+      return await performRefresh();
     } finally {
       refreshInFlight = null;
     }
-  })();
+  };
+  refreshInFlight = run();
   return refreshInFlight;
 }
 
@@ -170,6 +184,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
       if (refreshed) {
         return apiRequest<T>(path, { ...options, skipRefresh: true });
       }
+      clearSessionTokens();
     } else {
       clearSessionTokens();
     }

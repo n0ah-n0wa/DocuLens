@@ -227,6 +227,24 @@ class SqlAlchemyDocumentRepository:
         row = await self._owned(owner_id, document_id)
         return mappers.document_to_domain(row) if row is not None else None
 
+    async def list_processing_stragglers(
+        self,
+        *,
+        status: ProcessingStatus,
+        older_than: datetime,
+        limit: int = 50,
+    ) -> list[Document]:
+        rows = await self._session.scalars(
+            select(DocumentModel)
+            .where(
+                DocumentModel.processing_status == status,
+                DocumentModel.updated_at < older_than,
+            )
+            .order_by(DocumentModel.updated_at, DocumentModel.id)
+            .limit(max(1, min(limit, 500)))
+        )
+        return [mappers.document_to_domain(row) for row in rows]
+
     async def list_for_owner(self, owner_id: UUID) -> list[Document]:
         rows = await self._session.scalars(
             select(DocumentModel)

@@ -44,6 +44,9 @@ license to tune the product until only this corpus passes.
 
 - **Corpus scale** — a handful of short synthetic PDFs; lexical overlap is easy. Ranking quality on
   noisy enterprise corpora is not measured.
+- **Harness knobs** — the suite uses hybrid retrieval with bag-of-words embeddings,
+  `min_score=0.0`, and a harness `candidate_limit=12` (product default `RETRIEVAL_CANDIDATES` is
+  20). Do not treat harness knobs as the production profile.
 - **Embeddings** — bag-of-words test embeddings, not the production embedding model. Semantic near-
   misses and multilingual behaviour are out of scope.
 - **No free-form generation quality** — CI does not grade a real LLM’s answers. Fluency, partial
@@ -80,4 +83,5 @@ uv run python -m evals
 make eval
 ```
 
-Machine-readable output: `docs/eval/latest.json` (schema version 2).
+Machine-readable output: `docs/eval/latest.json` (schema version 2, gitignored).  
+Committed snapshot of a green run: [`sample-results.md`](sample-results.md).

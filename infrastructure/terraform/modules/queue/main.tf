@@ -19,9 +19,9 @@ variable "kms_key_arn" {
 }
 
 variable "visibility_timeout_seconds" {
-  description = "Must exceed the worker processing budget for a single job."
+  description = "Must exceed the worker Lambda timeout so a timed-out invocation cannot overlap a reclaim."
   type        = number
-  default     = 900
+  default     = 1080
 }
 
 variable "message_retention_seconds" {

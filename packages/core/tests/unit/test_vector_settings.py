@@ -25,7 +25,9 @@ DEPLOYED = {
     "storage_region": "eu-central-1",
     "storage_encryption": StorageEncryption.AES256,
     "embedding_provider": EmbeddingProviderKind.OPENAI,
+    "embedding_api_key": SecretStr("sk-embed"),
     "llm_provider": LLMProviderKind.OPENAI,
+    "llm_api_key": SecretStr("sk-llm"),
     "queue_backend": "sqs",
     "queue_sqs_url": "https://sqs.eu-central-1.amazonaws.com/123456789012/doculens",
     "queue_sqs_dlq_url": "https://sqs.eu-central-1.amazonaws.com/123456789012/doculens-dlq",
@@ -34,6 +36,8 @@ DEPLOYED = {
     "redis_url": "rediss://redis.internal:6379/0",
     "storage_expected_bucket_owner": "123456789012",
     "chroma_api_token": SecretStr("chroma-deployed-token"),
+    "max_file_size_mb": 10,
+    "llm_timeout_seconds": 20.0,
 }
 
 

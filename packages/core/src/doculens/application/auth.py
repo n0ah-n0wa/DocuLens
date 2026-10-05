@@ -64,9 +64,11 @@ class TokenClaims:
 
 class TokenCodec(Protocol):
     def encode(self, claims: TokenClaims) -> str: ...
-    def decode(self, token: str, *, expected_type: TokenType) -> TokenClaims:
-        """Verify signature, issuer, audience, expiry and type; raise ``InvalidTokenError`` or
-        ``TokenExpiredError`` otherwise."""
+
+    def decode(
+        self, token: str, *, expected_type: TokenType, verify_expiry: bool = True
+    ) -> TokenClaims:
+        """Verify signature, issuer, audience, type; optionally check expiry against the clock."""
         ...
 
 
@@ -211,8 +213,14 @@ class AuthService:
         return pair
 
     async def logout(self, refresh_token: str) -> None:
-        """Revoke the session the token belongs to. Idempotent for unknown or consumed tokens."""
-        claims = self._codec.decode(refresh_token, expected_type=TokenType.REFRESH)
+        """Revoke the session the token belongs to. Idempotent for unknown or consumed tokens.
+
+        Expiry is ignored so a client that only holds an expired refresh can still clear the
+        family after logout (signature / typ / iss / aud remain verified).
+        """
+        claims = self._codec.decode(
+            refresh_token, expected_type=TokenType.REFRESH, verify_expiry=False
+        )
         now = self._clock()
         async with self._unit_of_work() as uow:
             record = await uow.refresh_tokens.get(claims.token_id)
